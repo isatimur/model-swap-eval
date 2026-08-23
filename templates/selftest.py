@@ -164,15 +164,15 @@ print("\nrun_sweep.py: a fully-covered, correctly-hashed cache must resume with 
 import hashlib
 
 
-def prompt_hash(system, inp, max_tokens, temperature):   # must mirror run_sweep.py's prompt_hash()
-    payload = json.dumps([system, inp, max_tokens, temperature], sort_keys=True)
+def prompt_hash(system, inp, max_tokens, temperature, json_schema=None):   # must mirror run_sweep.py's prompt_hash()
+    payload = json.dumps([system, inp, max_tokens, temperature, json_schema], sort_keys=True)
     return hashlib.sha1(payload.encode()).hexdigest()[:12]
 
 
 d = workdir("run_sweep.py")
 write(os.path.join(d, "tasks.py"), '''
 FRONTIER = "test-vendor/frontier-model"
-MODELS = [FRONTIER, "test-vendor/cheap-model"]
+MODELS = [{"id": FRONTIER, "provider": "openrouter"}, {"id": "test-vendor/cheap-model", "provider": "openrouter"}]
 SEEDS = [11, 23]
 TASKS = [{
     "task": "t", "kind": "numeric", "system": "s", "max_tokens": 10, "temperature": 0.0,
