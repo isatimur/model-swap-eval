@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+tasks.py
+provider_pins.json
+outputs/
+splits.json
+.env
+*.key
+OR_KEY*
+OPENAI_API_KEY*

@@ -1,0 +1,169 @@
+"""run_sweep.py - Step 4: N-seed, provider-PINNED, concurrent, resumable sweep.
+
+Runs every model in tasks.py MODELS (candidates + the incumbent FRONTIER) over every
+task x case x seed. Pinning keeps quantization constant per model (rigor.md #3); the
+frontier's own seed variance is the eval's noise floor and its measured $/call anchors
+the savings math. Records content + cost + latency + the provider that ACTUALLY served
+each call. Incremental save; re-running resumes from outputs/seeds_raw.json.
+
+Usage:  OR_KEY=<key> python3 run_sweep.py
+Needs:  tasks.py (schema in build_golden.py docstring), provider_pins.json (pick_candidates.py pin)
+Output: outputs/seeds_raw.json - one record per task x case x model x seed
+"""
+import os, json, time, hashlib, statistics, urllib.request, urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tasks import TASKS, MODELS, SEEDS
+try:
+    from tasks import MAX_COST_PER_CELL          # optional hard-ceiling warn; None = median-based only
+except ImportError:
+    MAX_COST_PER_CELL = None
+
+KEY = os.environ["OR_KEY"]
+URL = "https://openrouter.ai/api/v1/chat/completions"
+WORKERS = 5
+OUT = "outputs/seeds_raw.json"
+PINS = json.load(open("provider_pins.json")) if os.path.exists("provider_pins.json") else {}
+
+def prompt_hash(t, case):                        # fingerprints what actually went into the call, so editing
+    payload = json.dumps([t["system"], case["input"], t["max_tokens"], t["temperature"]],
+                          sort_keys=True)         # a task's prompt/input/params invalidates cached cells
+    return hashlib.sha1(payload.encode()).hexdigest()[:12]
+
+EXPECTED_HASH = {(t["task"], c["id"]): prompt_hash(t, c) for t in TASKS for c in t["cases"]}
+
+def call(model, system, user, max_tokens, temperature, seed):
+    body = {"model": model,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+            "max_tokens": max_tokens, "temperature": temperature, "seed": seed}
+    pin = PINS.get(model)
+    if pin:  # constant quantization for this model across the whole sweep
+        body["provider"] = {"order": [pin["provider"]], "allow_fallbacks": False}
+    req = urllib.request.Request(URL, data=json.dumps(body).encode(), headers={
+        "Authorization": f"Bearer {KEY}", "Content-Type": "application/json"})
+    t0 = time.time()
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        r = json.load(resp)
+    dt = time.time() - t0
+    msg = r["choices"][0]["message"]
+    usage = r.get("usage", {})
+    return {
+        "content": msg.get("content") or "",
+        "reasoning_tokens": (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0),
+        "completion_tokens": usage.get("completion_tokens", 0),
+        "cost": usage.get("cost", 0.0),
+        "latency_s": round(dt, 1),
+        "finish_reason": r["choices"][0].get("finish_reason"),
+        "provider": r.get("provider"),            # verify the pin held
+        "served_model": r.get("model"),
+        "pinned_provider": pin["provider"] if pin else None,
+        "pinned_quant": pin["quant"] if pin else None,
+    }
+
+def call_retry(*a):
+    delay = 8
+    for attempt in range(5):
+        try:
+            return call(*a)
+        except urllib.error.HTTPError as e:
+            if e.code in (402, 429, 500, 502, 503) and attempt < 4:
+                time.sleep(delay); delay *= 2; continue
+            if attempt < 4: time.sleep(4); continue
+            raise
+        except Exception:
+            if attempt < 4: time.sleep(4); continue
+            raise
+    raise RuntimeError("unreachable")
+
+# resume support
+os.makedirs("outputs", exist_ok=True)
+done = {}
+skipped_errors = stale = 0
+if os.path.exists(OUT):
+    for r in json.load(open(OUT)):
+        if r.get("error"):                        # errored cells (429/500/timeout) are NOT done - retry them
+            skipped_errors += 1
+            continue
+        expected = EXPECTED_HASH.get((r["task"], r["case"]))
+        stored = r.get("prompt_hash")              # missing on pre-hash data: trust it (no forced re-sweep)
+        if stored and expected and stored != expected:
+            stale += 1                             # task/case prompt or params changed since this cell ran
+            continue
+        done[(r["task"], r["case"], r["model"], r["seed"])] = r
+    note = []
+    if skipped_errors: note.append(f"{skipped_errors} errored cell(s) will be retried")
+    if stale: note.append(f"{stale} stale cell(s) (prompt/params changed) will be re-run")
+    print(f"resuming: {len(done)} cells already present" + (f" ({'; '.join(note)})" if note else ""))
+
+jobs = []
+for t in TASKS:
+    for case in t["cases"]:
+        for model in MODELS:
+            for seed in SEEDS:
+                if (t["task"], case["id"], model, seed) not in done:
+                    jobs.append((t, case, model, seed))
+
+n_cases = sum(len(t["cases"]) for t in TASKS)
+print(f"{len(jobs)} cells to run ({len(MODELS)} models x {n_cases} cases x {len(SEEDS)} seeds)")
+unpinned = [m for m in MODELS if m not in PINS and "/" in m]
+if unpinned:
+    print(f"note: unpinned (closed/first-party or missing pin): {unpinned}")
+
+results = list(done.values())
+count = [0]
+model_costs = {}    # per-model cost history for runaway detection (global median is meaningless across 90x cost spread)
+
+def work(job):
+    t, case, model, seed = job
+    ph = EXPECTED_HASH[(t["task"], case["id"])]
+    try:
+        out = call_retry(model, t["system"], case["input"], t["max_tokens"], t["temperature"], seed)
+        return {"task": t["task"], "case": case["id"], "model": model, "seed": seed, "prompt_hash": ph, **out}
+    except Exception as e:
+        return {"task": t["task"], "case": case["id"], "model": model, "seed": seed, "prompt_hash": ph,
+                "error": str(e), "content": ""}
+
+with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+    futs = {ex.submit(work, j): j for j in jobs}
+    for fut in as_completed(futs):
+        rec = fut.result()
+        results.append(rec)
+        count[0] += 1
+        empty = "" if rec.get("content", "").strip() else " <EMPTY!>"       # empties are data, not retries
+        err = f' ERR {rec["error"][:40]}' if rec.get("error") else ""
+        pin_broke = (rec.get("pinned_provider") and rec.get("provider")
+                     and rec["pinned_provider"] not in str(rec["provider"])) and " <PIN-MISS!>" or ""
+        tag = f'{rec["task"]}/{rec["case"]}/{rec["model"].split("/")[-1]}#{rec["seed"]}'
+        print(f'[{count[0]:4d}/{len(jobs)}] {tag:58s} {rec.get("latency_s","?"):>5}s '
+              f'ct={rec.get("completion_tokens","?"):>5} ${rec.get("cost",0):.4f} '
+              f'[{rec.get("provider","?")}]{pin_broke}{empty}{err}')
+        c_cost = rec.get("cost", 0) or 0                                     # reasoning-runaway watch (per model)
+        mc = model_costs.setdefault(rec["model"], [])
+        mc.append(c_cost)
+        if MAX_COST_PER_CELL and c_cost > MAX_COST_PER_CELL:                  # independent of the median check
+            print(f'      ^ WARN: cell ${c_cost:.4f} exceeds MAX_COST_PER_CELL ${MAX_COST_PER_CELL} '
+                  f'(rtok={rec.get("reasoning_tokens")}, {rec.get("latency_s")}s)')
+        if len(mc) >= 6:                                                      # this MODEL's own median, not the global one
+            med = statistics.median(mc)
+            if med > 0 and c_cost > 8 * med:
+                print(f'      ^ WARN: possible reasoning runaway - ${c_cost:.4f} = {c_cost/med:.0f}x this model\'s median '
+                      f'(rtok={rec.get("reasoning_tokens")}, {rec.get("latency_s")}s). max_tokens enforcement is provider-dependent.')
+        if count[0] % 10 == 0:
+            json.dump(results, open(OUT, "w"), indent=2)
+
+json.dump(results, open(OUT, "w"), indent=2)
+total = sum(r.get("cost", 0) for r in results)
+empties = sum(1 for r in results if not r.get("content", "").strip())
+errs = sum(1 for r in results if r.get("error"))
+pin_misses = sum(1 for r in results if r.get("pinned_provider") and r.get("provider")
+                 and r["pinned_provider"] not in str(r["provider"]))
+print(f"\nDONE  {len(results)} cells  empties={empties}  errors={errs}  "
+      f"pin_misses={pin_misses}  total_cost=${total:.4f}")
+if pin_misses:
+    print("WARNING: some calls were served off-pin - those cells mix quantizations; investigate before grading.")
+top = sorted(results, key=lambda r: -(r.get("cost", 0) or 0))[:3]             # spot budget-eating cells
+if top and (top[0].get("cost", 0) or 0) > 0:
+    print("most expensive cells (watch for reasoning runaways inflating measured $/call):")
+    for r in top:
+        print(f'  ${r.get("cost",0):.4f}  {r["task"]}/{r["case"]}/{r["model"].split("/")[-1]}#{r["seed"]}  '
+              f'rtok={r.get("reasoning_tokens")}  {r.get("latency_s")}s')
