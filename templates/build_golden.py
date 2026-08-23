@@ -54,13 +54,19 @@ TASKS = [{
 import os, sys, json, time, random, urllib.request, urllib.error
 from collections import Counter
 from tasks import TASKS, FRONTIER
+try:
+    from tasks import MODELS
+    MODEL_BY_ID = {m["id"]: m for m in MODELS}
+except ImportError:
+    MODELS = None
+    MODEL_BY_ID = {}
 
 KEY = os.environ["OR_KEY"]
 URL = "https://openrouter.ai/api/v1/chat/completions"
 OUT = "outputs/golden_proposed.json"
 N = int(sys.argv[sys.argv.index("--n") + 1]) if "--n" in sys.argv else 1
 
-def call(model, system, user, max_tokens, temperature, seed):
+def call_openrouter(model, system, user, max_tokens, temperature, seed):
     body = json.dumps({"model": model,
                        "messages": [{"role": "system", "content": system},
                                     {"role": "user", "content": user}],
@@ -76,6 +82,43 @@ def call(model, system, user, max_tokens, temperature, seed):
         except Exception as e:
             if attempt == 3: raise
             print(f"    retry after {type(e).__name__}: {e}"); time.sleep(6 * (attempt + 1))
+
+OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_URL = "https://api.openai.com/v1/responses"
+
+
+def extract_output_text(data):
+    if isinstance(data.get("output_text"), str) and data["output_text"]:
+        return data["output_text"]
+    chunks = []
+    for item in data.get("output") or []:
+        for c in item.get("content") or []:
+            if isinstance(c.get("text"), str):
+                chunks.append(c["text"])
+    if not chunks:
+        raise ValueError("no output text in Responses API reply")
+    return "".join(chunks)
+
+
+def call_openai_responses(model, instructions, input_obj, json_schema, timeout=6):
+    body = {"model": model, "instructions": instructions, "input": json.dumps(input_obj),
+            "text": {"format": {"type": "json_schema", "name": "eval_decision",
+                                 "strict": True, "schema": json_schema}}}
+    req = urllib.request.Request(OPENAI_URL, data=json.dumps(body).encode(), headers={
+        "Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout + 10) as resp:
+        data = json.load(resp)
+    return extract_output_text(data)
+
+
+def call_for_model(model_cfg, t, case, seed):
+    provider = model_cfg.get("provider", "openrouter")
+    if provider == "openrouter":
+        return call_openrouter(model_cfg["id"], t["system"], case["input"], t["max_tokens"],
+                                t["temperature"], seed)
+    if provider == "openai_responses":
+        return call_openai_responses(model_cfg["id"], t["system"], case["input"], t["json_schema"])
+    raise ValueError(f'unknown provider {provider!r} for model {model_cfg["id"]!r}')
 
 os.makedirs("outputs", exist_ok=True)
 golden = json.load(open(OUT)) if os.path.exists(OUT) else {}   # resumable
@@ -113,8 +156,8 @@ for t, c in todo:
     key = f'{t["task"]}/{c["id"]}'
     # proposal seeds are disjoint from the sweep SEEDS: otherwise the frontier's identical sweep
     # cell (same model+seed) would trivially match its own reference by construction (M7).
-    props = [call(FRONTIER, t["system"], c["input"], t["max_tokens"], t["temperature"], 9001 + i)
-             for i in range(N)]
+    frontier_cfg = MODEL_BY_ID[FRONTIER]
+    props = [call_for_model(frontier_cfg, t, c, 9001 + i) for i in range(N)]
     golden[key] = {"split": c["split"], "hard": c.get("hard", False),
                    "proposals": props, "ref_raw": props[0],
                    "human_validated": False}
