@@ -55,13 +55,23 @@ a genuine dogfood case, not a synthetic one.
 
 ### Provider abstraction
 
-Extract the existing OpenRouter call logic from `run_sweep.py`/`build_golden.py`/`judge.py` into
-`providers/openrouter.py` (behavior unchanged — same body shape, same retry/backoff). Add
-`providers/openai_responses.py`: POSTs to `https://api.openai.com/v1/responses` with
-`instructions` + a JSON `input` payload + `text.format.json_schema` (`strict: true`), matching
-`gate.mjs`'s exact call shape. Both expose the same return contract the templates already use
-(content/cost/latency/finish_reason/etc.) so `run_sweep.py`'s cell loop doesn't need to know which
-provider it's calling.
+**Revised during planning (2026-08-23):** originally scoped as a shared `providers/` package.
+Changed to match this codebase's own existing convention instead: every template already
+duplicates its own small helpers (`get()`/`call()`/`extract_json`/`balanced_objects` all appear
+independently in multiple files) rather than importing a shared module — no template has ever
+depended on another. A `providers/` package would be the first cross-file import in the whole
+methodology, adding a new structural concept for one capability. Duplicating instead keeps every
+template copy-paste-standalone, unchanged.
+
+Each template that dispatches model calls (`run_sweep.py`, `build_golden.py`) gets its own
+`call_openai_responses(model, instructions, input_obj, json_schema, timeout=6)` function
+alongside its existing OpenRouter caller (renamed `call_openrouter` for clarity), plus a
+`call_for_model(model_cfg, task, case, seed)` dispatcher keyed on `model_cfg["provider"]`. The new
+function POSTs to `https://api.openai.com/v1/responses` with `instructions` + a JSON `input`
+payload + `text.format.json_schema` (`strict: true`), matching `gate.mjs`'s exact call shape.
+`judge.py` is untouched (the first worked example is `structured`, not `subjective` — no
+provider question arises there yet; noted as future work if a subjective+direct-provider case
+comes up).
 
 ### `tasks.py` schema changes (breaking, deliberately — this is a fork, not bound to upstream compat)
 
@@ -103,7 +113,8 @@ offline-fixture pattern already used for every other check in that suite).
 
 Same discipline as oss-migration-eval's own `selftest.py`: every new code path gets an offline,
 no-API-key regression check before it's trusted. Specifically:
-- `providers/openai_responses.py`'s request-building logic, tested against a fixture matching
+- `call_openai_responses`'s request-building logic (duplicated in `run_sweep.py`/`build_golden.py`
+  per the revised architecture above), tested against a fixture matching
   `gate.mjs`'s real payload shape (no live call).
 - `preflight.py validate` extended to catch a `provider: openai_responses` task missing
   `json_schema`, or a case whose `input` is a string where a dict is required.
