@@ -51,6 +51,11 @@ def extract_json(text):                       # LAST parseable object (reasoning
         except Exception: continue
     return None
 
+def extract_json_or_structured(r):             # prefer an already-parsed, schema-guaranteed result
+    if r.get("content_json") is not None:       # (openai_responses: strict mode already validated it)
+        return r["content_json"]
+    return extract_json(r.get("content", ""))   # openrouter: fall back to reasoning-trace extraction
+
 def get_path(obj, path):                       # dotted-path getter: "fit.subtotal"
     for part in path.split("."):
         if not isinstance(obj, dict): return None
@@ -109,7 +114,7 @@ for t in TASKS:
             if not recs: continue
             name = m.split("/")[-1][:26]
             if t["kind"] == "structured":
-                vals = [extract_json(r.get("content", "")) for r in recs]
+                vals = [extract_json_or_structured(r) for r in recs]
                 parsed = sum(v is not None for v in vals)
                 if ref is None:                # boundary case: report spread, don't pass/fail
                     fields = case.get("ref_fields", []) + list(case.get("tolerance", {}))
