@@ -31,7 +31,7 @@ except ImportError:
 RAW = json.load(open("outputs/seeds_raw.json"))
 GOLDEN = json.load(open("outputs/golden_proposed.json")) if os.path.exists("outputs/golden_proposed.json") else {}
 SPLITS = json.load(open("outputs/splits.json")) if os.path.exists("outputs/splits.json") else {}
-MODEL_IDS = [m["id"] if isinstance(m, dict) else m for m in MODELS]
+MODEL_IDS = [m["id"] for m in MODELS]
 MODELS_ORDER = [mid for mid in MODEL_IDS if any(r["model"] == mid for r in RAW)]
 
 def balanced_objects(text):                   # every top-level {...} span, in order
