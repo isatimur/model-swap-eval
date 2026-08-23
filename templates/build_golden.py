@@ -53,13 +53,8 @@ TASKS = [{
 """
 import os, sys, json, time, random, urllib.request, urllib.error
 from collections import Counter
-from tasks import TASKS, FRONTIER
-try:
-    from tasks import MODELS
-    MODEL_BY_ID = {m["id"]: m for m in MODELS}
-except ImportError:
-    MODELS = None
-    MODEL_BY_ID = {}
+from tasks import TASKS, FRONTIER, MODELS
+MODEL_BY_ID = {m["id"]: m for m in MODELS}
 
 KEY = os.environ["OR_KEY"]
 URL = "https://openrouter.ai/api/v1/chat/completions"

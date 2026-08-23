@@ -131,6 +131,7 @@ def tasks_py(n):
     )
     return f'''
 FRONTIER = "test-vendor/frontier-model"
+MODELS = [{{"id": FRONTIER, "provider": "openrouter"}}, {{"id": "test-vendor/cheap-model", "provider": "openrouter"}}]
 TASKS = [{{
     "task": "t", "kind": "numeric", "system": "s", "max_tokens": 10, "temperature": 0.0,
     "cases": [{cases}],
