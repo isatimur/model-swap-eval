@@ -65,7 +65,7 @@ d = workdir("grade.py")
 
 write(os.path.join(d, "tasks.py"), '''
 FRONTIER = "test-vendor/frontier-model"
-MODELS = [FRONTIER, "test-vendor/cheap-model"]
+MODELS = [{"id": FRONTIER, "provider": "openrouter"}, {"id": "test-vendor/cheap-model", "provider": "openrouter"}]
 SEEDS = [11, 23, 42]
 
 TASKS = [
