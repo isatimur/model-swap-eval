@@ -48,7 +48,11 @@ def discover():
 def pin():
     from tasks import MODELS, FRONTIER
     pins = json.load(open("provider_pins.json")) if os.path.exists("provider_pins.json") else {}
-    for model in MODELS:
+    for model_cfg in MODELS:
+        if model_cfg.get("provider", "openrouter") != "openrouter":
+            print(f'{model_cfg["id"]:42s} provider={model_cfg["provider"]} - no OpenRouter pin needed')
+            continue
+        model = model_cfg["id"]
         if model.startswith(CLOSED_PREFIXES):
             print(f"{model:42s} closed/first-party - no pin needed"); continue
         if model in pins:
