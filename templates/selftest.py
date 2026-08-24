@@ -5,6 +5,13 @@ make a real network call). Copies the sibling scripts into an isolated tmp dir p
 real usage: templates are copied alongside a user's tasks.py and run from that directory - the
 scripts resolve `from tasks import ...` against their own directory, not the caller's cwd).
 
+Note on the openai_responses run_sweep.py fixture below: its no-network guarantee holds only
+because the fixture's outputs/seeds_raw.json cell carries a prompt_hash that matches run_sweep.py's
+own prompt_hash() for that task/case. If that hash ever mismatches (e.g. the two payloads drift out
+of sync), run_sweep.py will treat the cell as not-yet-run and attempt one real HTTPS call to
+api.openai.com with a dummy key - the "0 cells to run" check below will still catch the drift and
+fail red, but only after that call has already gone out.
+
 Covers three regressions caught by an upstream audit:
   1. grade.py: a numeric-kind task falling back to a golden_proposed.json reference (no "ref" in
      tasks.py) must actually get graded, not silently skipped (the fallback ref used to be handed
@@ -193,6 +200,37 @@ shutil.rmtree(d, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
+print("\nrun_sweep.py: an openai_responses-only tasks.py must load and dispatch correctly (no network call)")
+d = workdir("run_sweep.py")
+write(os.path.join(d, "tasks.py"), '''
+FRONTIER = "gpt-5.4-mini"
+MODELS = [{"id": FRONTIER, "provider": "openai_responses"}]
+SEEDS = [11]
+TASKS = [{
+    "task": "gate", "kind": "structured", "system": "instructions here", "max_tokens": 50,
+    "temperature": 0.0, "json_schema": {"type": "object", "properties": {"action": {"type": "string"}}},
+    "cases": [{"id": "c0", "input": {"offer": {"id": "x"}}}],
+}]
+''')
+ph2 = prompt_hash("instructions here", {"offer": {"id": "x"}}, 50, 0.0,
+                   {"type": "object", "properties": {"action": {"type": "string"}}})
+write(os.path.join(d, "outputs", "seeds_raw.json"), json.dumps([
+    {"task": "gate", "case": "c0", "model": "gpt-5.4-mini", "seed": 11, "prompt_hash": ph2,
+     "content": "{}", "content_json": {"action": "allow"}, "cost": 0.0},
+]))
+# Pre-seeding the one job as an already-cached, correctly-hashed cell (rather than pointing this at a
+# real endpoint) is the only way to prove "loads and dispatches correctly" without spending anything or
+# risking a live call: an openai_responses model with no cached cell WOULD attempt a real HTTPS request.
+p = run(d, "run_sweep.py")
+check("run_sweep.py exits 0 for an openai_responses-only tasks.py", p.returncode == 0, p.stderr[-2000:])
+check("resume recognizes the cached cell for the openai_responses model",
+      "resuming: 1 cells already present" in p.stdout, p.stdout)
+check("0 cells to run - dispatch resolved without ever reaching the network",
+      "0 cells to run" in p.stdout, p.stdout)
+shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 print("\npreflight.py validate: must catch every injected schema error, and pass a clean tasks.py")
 d = workdir("preflight.py")
 write(os.path.join(d, "tasks.py"), '''
@@ -256,6 +294,30 @@ p = subprocess.run([sys.executable, "preflight.py", "validate"], cwd=d,
 check("preflight.py validate exits 1 on a broken openai_responses tasks.py", p.returncode == 1, p.stdout)
 check("catches missing json_schema", "json_schema" in p.stdout, p.stdout)
 check("catches a string \"input\" where openai_responses needs a dict", "must be a dict" in p.stdout, p.stdout)
+shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+print("\ngrade.py: content_json must be trusted over garbled raw content text")
+d = workdir("grade.py")
+write(os.path.join(d, "tasks.py"), '''
+FRONTIER = "gpt-5.4-mini"
+MODELS = [{"id": FRONTIER, "provider": "openai_responses"}]
+SEEDS = [11]
+TASKS = [{
+    "task": "t", "kind": "structured", "system": "s", "max_tokens": 50, "temperature": 0.0,
+    "json_schema": {"type": "object"},
+    "cases": [{"id": "c0", "input": {"x": 1}, "ref": {"action": "allow"}, "validated": True,
+               "ref_fields": ["action"]}],
+}]
+''')
+write(os.path.join(d, "outputs", "seeds_raw.json"), json.dumps([
+    {"task": "t", "case": "c0", "model": "gpt-5.4-mini", "seed": 11,
+     "content": "not parseable as json at all", "content_json": {"action": "allow"}, "cost": 0.0},
+]))
+p = run(d, "grade.py")
+check("grade.py exits 0", p.returncode == 0, p.stderr[-2000:])
+check("trusts content_json over unparseable raw content (the regression)", "pass 1/1" in p.stdout, p.stdout)
 shutil.rmtree(d, ignore_errors=True)
 
 
