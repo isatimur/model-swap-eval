@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 tasks.py
+!examples/**/tasks.py
 provider_pins.json
 outputs/
 splits.json
