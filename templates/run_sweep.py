@@ -10,7 +10,7 @@ Usage:  OR_KEY=<key> python3 run_sweep.py
 Needs:  tasks.py (schema in build_golden.py docstring), provider_pins.json (pick_candidates.py pin)
 Output: outputs/seeds_raw.json - one record per task x case x model x seed
 """
-import os, json, time, hashlib, statistics, urllib.request, urllib.error
+import os, json, time, hashlib, statistics, threading, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tasks import TASKS, MODELS, SEEDS
 MODEL_IDS = [m["id"] for m in MODELS]
@@ -20,7 +20,13 @@ try:
 except ImportError:
     MAX_COST_PER_CELL = None
 
-KEY = os.environ["OR_KEY"]
+PROVIDERS_USED = {m.get("provider", "openrouter") for m in MODELS}   # only demand the keys actually needed
+KEY = None
+if "openrouter" in PROVIDERS_USED:
+    KEY = os.environ.get("OR_KEY")
+    if not KEY:
+        raise SystemExit('OR_KEY is not set, but MODELS contains model(s) with provider "openrouter" '
+                         '- export your OpenRouter key, or drop those models from MODELS.')
 URL = "https://openrouter.ai/api/v1/chat/completions"
 WORKERS = 5
 OUT = "outputs/seeds_raw.json"
@@ -63,6 +69,9 @@ def call_openrouter(model, system, user, max_tokens, temperature, seed):
     }
 
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
+if "openai_responses" in PROVIDERS_USED and not OPENAI_KEY:   # fail fast, never send "Bearer None"
+    raise SystemExit('OPENAI_API_KEY is not set, but MODELS contains model(s) with provider '
+                     '"openai_responses" - export your OpenAI key before sweeping.')
 OPENAI_URL = "https://api.openai.com/v1/responses"
 
 
@@ -85,21 +94,36 @@ except ImportError:
     PRICING = {}
 
 
+_PRICING_WARNED = set()                # loud-once-per-model, not once-per-cell
+_PRICING_LOCK = threading.Lock()
+
+
 def priced_cost(model, usage_input, usage_output):
     p = PRICING.get(model)
-    if not p:
+    if not p:                          # unknown cost, NOT zero cost - never coerce this to 0 downstream
+        with _PRICING_LOCK:
+            first = model not in _PRICING_WARNED
+            _PRICING_WARNED.add(model)
+        if first:
+            print(f"WARN: no PRICING entry for {model} - cost will be reported as n/a, not $0. "
+                  f"Add PRICING[{model!r}] = {{'prompt': $/tok, 'completion': $/tok}} to tasks.py "
+                  f"to get real $/call and savings numbers for this model.")
         return None
     return usage_input * p.get("prompt", 0) + usage_output * p.get("completion", 0)
 
 
-def call_openai_responses(model, instructions, input_obj, json_schema, timeout=6):
-    body = {
+def _build_openai_responses_body(model, instructions, input_obj, json_schema):
+    return {
         "model": model,
         "instructions": instructions,
         "input": json.dumps(input_obj),
         "text": {"format": {"type": "json_schema", "name": "eval_decision",
                              "strict": True, "schema": json_schema}},
     }
+
+
+def call_openai_responses(model, instructions, input_obj, json_schema, timeout=6):
+    body = _build_openai_responses_body(model, instructions, input_obj, json_schema)
     req = urllib.request.Request(OPENAI_URL, data=json.dumps(body).encode(), headers={
         "Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"})
     t0 = time.time()
@@ -215,36 +239,45 @@ with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         pin_broke = (rec.get("pinned_provider") and rec.get("provider")
                      and rec["pinned_provider"] not in str(rec["provider"])) and " <PIN-MISS!>" or ""
         tag = f'{rec["task"]}/{rec["case"]}/{rec["model"].split("/")[-1]}#{rec["seed"]}'
+        cost_str = "$n/a  " if rec.get("cost") is None else f'${rec["cost"]:.4f}'   # unknown != $0
         print(f'[{count[0]:4d}/{len(jobs)}] {tag:58s} {rec.get("latency_s","?"):>5}s '
-              f'ct={rec.get("completion_tokens","?"):>5} ${rec.get("cost") or 0:.4f} '
+              f'ct={rec.get("completion_tokens","?"):>5} {cost_str} '
               f'[{rec.get("provider","?")}]{pin_broke}{empty}{err}')
-        c_cost = rec.get("cost", 0) or 0                                     # reasoning-runaway watch (per model)
-        mc = model_costs.setdefault(rec["model"], [])
-        mc.append(c_cost)
-        if MAX_COST_PER_CELL and c_cost > MAX_COST_PER_CELL:                  # independent of the median check
-            print(f'      ^ WARN: cell ${c_cost:.4f} exceeds MAX_COST_PER_CELL ${MAX_COST_PER_CELL} '
-                  f'(rtok={rec.get("reasoning_tokens")}, {rec.get("latency_s")}s)')
-        if len(mc) >= 6:                                                      # this MODEL's own median, not the global one
-            med = statistics.median(mc)
-            if med > 0 and c_cost > 8 * med:
-                print(f'      ^ WARN: possible reasoning runaway - ${c_cost:.4f} = {c_cost/med:.0f}x this model\'s median '
-                      f'(rtok={rec.get("reasoning_tokens")}, {rec.get("latency_s")}s). max_tokens enforcement is provider-dependent.')
+        c_cost = rec.get("cost")                                              # reasoning-runaway watch (per model)
+        if c_cost is not None:                                                # unpriced cell: no cost signal to watch
+            mc = model_costs.setdefault(rec["model"], [])
+            mc.append(c_cost)
+            if MAX_COST_PER_CELL and c_cost > MAX_COST_PER_CELL:              # independent of the median check
+                print(f'      ^ WARN: cell ${c_cost:.4f} exceeds MAX_COST_PER_CELL ${MAX_COST_PER_CELL} '
+                      f'(rtok={rec.get("reasoning_tokens")}, {rec.get("latency_s")}s)')
+            if len(mc) >= 6:                                                  # this MODEL's own median, not the global one
+                med = statistics.median(mc)
+                if med > 0 and c_cost > 8 * med:
+                    print(f'      ^ WARN: possible reasoning runaway - ${c_cost:.4f} = {c_cost/med:.0f}x this model\'s median '
+                          f'(rtok={rec.get("reasoning_tokens")}, {rec.get("latency_s")}s). max_tokens enforcement is provider-dependent.')
         if count[0] % 10 == 0:
             json.dump(results, open(OUT, "w"), indent=2)
 
 json.dump(results, open(OUT, "w"), indent=2)
-total = sum(r.get("cost") or 0 for r in results)
+priced = [r for r in results if r.get("cost") is not None]
+unpriced = len(results) - len(priced)                       # cells with unknown cost - NOT $0 cells
+total = sum(r["cost"] for r in priced)
 empties = sum(1 for r in results if not r.get("content", "").strip())
 errs = sum(1 for r in results if r.get("error"))
 pin_misses = sum(1 for r in results if r.get("pinned_provider") and r.get("provider")
                  and r["pinned_provider"] not in str(r["provider"]))
 print(f"\nDONE  {len(results)} cells  empties={empties}  errors={errs}  "
-      f"pin_misses={pin_misses}  total_cost=${total:.4f}")
+      f"pin_misses={pin_misses}  total_cost=${total:.4f}"
+      + (f" over {len(priced)} priced cell(s)" if unpriced else ""))
+if unpriced:
+    unpriced_models = sorted({r["model"] for r in results if r.get("cost") is None})
+    print(f"WARNING: {unpriced} cell(s) have UNKNOWN cost (no PRICING entry): {unpriced_models}. "
+          f"That is not $0 - grade.py reports those models' $/call and savings as n/a.")
 if pin_misses:
     print("WARNING: some calls were served off-pin - those cells mix quantizations; investigate before grading.")
-top = sorted(results, key=lambda r: -(r.get("cost", 0) or 0))[:3]             # spot budget-eating cells
-if top and (top[0].get("cost", 0) or 0) > 0:
+top = sorted(priced, key=lambda r: -r["cost"])[:3]                            # spot budget-eating cells
+if top and top[0]["cost"] > 0:
     print("most expensive cells (watch for reasoning runaways inflating measured $/call):")
     for r in top:
-        print(f'  ${r.get("cost") or 0:.4f}  {r["task"]}/{r["case"]}/{r["model"].split("/")[-1]}#{r["seed"]}  '
+        print(f'  ${r["cost"]:.4f}  {r["task"]}/{r["case"]}/{r["model"].split("/")[-1]}#{r["seed"]}  '
               f'rtok={r.get("reasoning_tokens")}  {r.get("latency_s")}s')

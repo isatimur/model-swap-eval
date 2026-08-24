@@ -10,7 +10,10 @@ Two independent subcommands:
              judges/seeds, judge-family overlap, malformed tolerance/word_range. Prints
              every problem found (not just the first) and exits non-zero on anything fatal.
 
-  estimate : needs OR_KEY. Fetches live per-model pricing and computes the WORST-CASE
+  estimate : needs OR_KEY, and prices OPENROUTER models only (a direct-provider model such
+             as provider "openai_responses" is listed and skipped - OpenRouter's /models
+             pricing does not describe it; use that provider's own rate card and tasks.py's
+             PRICING dict instead). Fetches live per-model pricing and computes the WORST-CASE
              cost ceiling for the full sweep the same way OpenRouter itself pre-authorizes
              a call (prompt tokens x prompt price + max_tokens x completion price, per
              cell) - this is deliberately pessimistic, not a prediction; real spend is
@@ -85,8 +88,10 @@ def validate():
         models_by_id = {m["id"]: m for m in MODELS if isinstance(m, dict) and "id" in m}
         task_model_providers = {models_by_id[mid].get("provider", "openrouter") for mid in model_ids if mid in models_by_id}
         if len(task_model_providers) > 1:
-            warn(f"{tname}: MODELS mixes providers ({sorted(task_model_providers)}) - fine if "
-                 f"deliberate (comparing across calling patterns), but confirm that's the intent.")
+            err(f"{tname}: MODELS mixes providers ({sorted(task_model_providers)}) - not supported. "
+                f'A case\'s "input" can only have ONE shape: "openrouter" needs a string prompt, '
+                f'"openai_responses" needs a dict payload. Whichever shape you pick, the other '
+                f"provider's models crash on it mid-sweep. Split the mix into two tasks.py runs.")
         if "openai_responses" in task_model_providers:
             if "json_schema" not in t:
                 err(f'{tname}: at least one model uses provider "openai_responses" but the task has '
@@ -181,18 +186,41 @@ def price(m, kind):  # $ per token (pricing API reports $/token, not $/M)
 
 
 def est_tokens(text):  # ~4 chars/token - a rough, documented approximation, not a tokenizer
+    if not isinstance(text, str):
+        text = json.dumps(text)          # dict-shaped case input (a direct-provider payload)
     return max(1, len(text) // 4)
 
 
 def estimate():
-    key = os.environ["OR_KEY"]
+    or_ids, other = [], {}               # estimate prices against OpenRouter's live catalog only
+    for m in MODELS:
+        mid = m["id"] if isinstance(m, dict) else m
+        provider = m.get("provider", "openrouter") if isinstance(m, dict) else "openrouter"
+        if provider == "openrouter":
+            or_ids.append(mid)
+        else:
+            other.setdefault(provider, []).append(mid)
+    for provider, ids in sorted(other.items()):
+        print(f'note: preflight estimate is not yet supported for provider "{provider}" - {ids} '
+              f"excluded from the ceiling below (OpenRouter's /models pricing does not cover a "
+              f"direct-provider call). Price those from the provider's own rate card and put them "
+              f'in tasks.py PRICING. See references/providers.md.')
+    if not or_ids:
+        sys.exit('preflight estimate: no model in MODELS uses provider "openrouter", so there is '
+                 "nothing to price against OpenRouter's live catalog - estimate is not yet supported "
+                 'for direct providers (references/providers.md). Use "preflight.py validate" for the '
+                 "offline checks, and the provider's own rate card for the cost ceiling.")
+    key = os.environ.get("OR_KEY")
+    if not key:
+        sys.exit("preflight estimate needs OR_KEY (it reads OpenRouter's live pricing). "
+                 '"preflight.py validate" needs no key at all.')
     catalog = {m["id"]: m for m in get("/models", key)["data"]}
     n_seeds = len(SEEDS)
     ceiling = 0.0
     missing_pricing = []
     print(f"{'model':42s} {'cells':>7s} {'ceiling $':>10s}")
     per_model = {}
-    for model in MODELS:
+    for model in or_ids:
         n_cells = sum(len(t["cases"]) for t in TASKS) * n_seeds
         m = catalog.get(model)
         if not m:

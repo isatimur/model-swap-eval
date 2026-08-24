@@ -44,7 +44,11 @@ n_seeds = len(SEEDS)
 n_cells = n_models * n_cases * n_seeds
 
 cost_by_model = (GRADE or {}).get("cost", {}).get("models", {}) or {}
-measured_total = sum(v["mean_cost"] * v["n"] for v in cost_by_model.values()) if cost_by_model else None
+# A null mean_cost means grade.py could not price that model (no PRICING entry) - it is UNKNOWN,
+# not zero. Treating it as 0 here would understate the sweep's real cost, so the total reads n/a.
+unpriced_models = [m for m, v in cost_by_model.items() if v.get("mean_cost") is None]
+measured_total = (sum(v["mean_cost"] * v["n"] for v in cost_by_model.values())
+                  if cost_by_model and not unpriced_models else None)
 
 lines = []
 def emit(s=""): lines.append(s)
@@ -55,6 +59,8 @@ emit(f"**Date:** {date.today().isoformat()} - **Incumbent:** {FRONTIER} - "
      f"**Task volume:** {FILL} (calls/month, $/month)")
 emit(f"**Harness:** {n_models} models x {n_cases} cases x {n_seeds} seeds = {n_cells} cells, "
      f"provider-pinned - measured sweep cost: {fmt_money(measured_total)}"
+     + (f" (cost UNKNOWN for {', '.join(short(m) for m in unpriced_models)} - no PRICING entry in "
+        f"tasks.py; this is not $0)" if unpriced_models else "")
      + (" (excludes judge panel API cost, not tracked separately)" if JUDGE else ""))
 emit(f"**Golden refs validated by:** {FILL} (grade.py already refuses to run on an unvalidated ref, "
      f"but WHO signed off is not machine-checkable)")

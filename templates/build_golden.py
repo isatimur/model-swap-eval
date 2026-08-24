@@ -12,16 +12,32 @@ to it). Nothing becomes a reference without human sign-off.
 Also assigns deterministic dev/test/val splits (~50/30/20) to cases lacking a "split".
 
 Usage:  OR_KEY=<openrouter-key> python3 build_golden.py [--n 3]
+        OPENAI_API_KEY=<key> python3 build_golden.py        # if FRONTIER's provider is "openai_responses"
         --n : proposals per case (default 1; use 3 on subjective tasks to expose variance)
+
+        Each key is required only if some model in MODELS actually uses that provider:
+        OR_KEY for provider "openrouter", OPENAI_API_KEY for provider "openai_responses".
 
 --- tasks.py schema (the contract shared by all templates in this skill) -------------------
 FRONTIER = "<incumbent-model-id>"                # your current frontier model; verify the live id
                                                  # via pick_candidates.py - never trust a remembered version string
-MODELS   = [FRONTIER, "<candidate-id>", ...]     # candidates + incumbent, all swept (shortlist LIVE, see candidate-selection.md)
-SEEDS    = [11, 23, 42, 77, 101]                 # >=3, default 5
+MODELS   = [                                     # candidates + incumbent, all swept (shortlist LIVE, see candidate-selection.md)
+  {"id": FRONTIER, "provider": "openrouter"},     # provider: "openrouter" (default if the key is
+  {"id": "<candidate-id>", "provider": "openrouter"},  # omitted) | "openai_responses" (direct
+  {"id": "<openai-model-id>", "provider": "openai_responses"},  # OpenAI Responses API, strict
+]                                                 # JSON-schema mode). See references/providers.md.
+SEEDS    = [11, 23, 42, 77, 101]                 # >=3, default 5. NOTE: the "openai_responses" path does
+                                                 # not forward seed/temperature/max_tokens, so its N seeds
+                                                 # are N identical requests (providers.md's limitation).
 JUDGES   = ["x-ai/...", "openai/...", "google/..."]  # families != candidate families
 BANNED   = ["i couldn't help but notice", ...]   # optional banned phrases for text tasks
 MAX_COST_PER_CELL = 0.10                          # optional: run_sweep warns on any cell above this (reasoning-runaway guard)
+PRICING  = {                                      # optional, and the ONLY cost source for providers that
+  "<model-id>": {"prompt": 2.5e-7,                # do not bill through OpenRouter's usage.cost (i.e. every
+                 "completion": 2.0e-6},           # "openai_responses" model). $ per TOKEN, from the
+}                                                 # provider's own rate card. A model with no entry has
+                                                 # UNKNOWN cost: grade.py/build_report.py print its $/call
+                                                 # and savings as "n/a" - never $0 and never 100% saved.
 
 TASKS = [{
   "task": "lead_scoring",
@@ -30,9 +46,14 @@ TASKS = [{
   "max_tokens": 8000,
   "temperature": 0.0,              # the production value
   "rubric": "...{ctx}...",         # subjective only: judge rubric, {ctx} = case input
+  "json_schema": {...},            # REQUIRED when any model in MODELS uses provider
+                                   # "openai_responses": the strict JSON schema that call's
+                                   # text.format carries. Unused on the pure-openrouter path.
   "cases": [{
     "id": "hot_lead",
-    "input": "<real production input>",
+    "input": "<real production input>",   # a STRING prompt for "openrouter" models; a DICT (the JSON
+                                          # payload) for "openai_responses" models - the two shapes are
+                                          # incompatible, so preflight.py rejects mixing providers.
     "split": "dev",                # dev | test | val (assigned here if absent)
     "ref": {"tier": "Hot", "total": 89},   # structured: dict | numeric: number | subjective/
                                            # boundary: explicit None | key ABSENT: build_golden
@@ -56,7 +77,13 @@ from collections import Counter
 from tasks import TASKS, FRONTIER, MODELS
 MODEL_BY_ID = {m["id"]: m for m in MODELS}
 
-KEY = os.environ["OR_KEY"]
+PROVIDERS_USED = {m.get("provider", "openrouter") for m in MODELS}   # only demand the keys actually needed
+KEY = None
+if "openrouter" in PROVIDERS_USED:
+    KEY = os.environ.get("OR_KEY")
+    if not KEY:
+        raise SystemExit('OR_KEY is not set, but MODELS contains model(s) with provider "openrouter" '
+                         '- export your OpenRouter key, or drop those models from MODELS.')
 URL = "https://openrouter.ai/api/v1/chat/completions"
 OUT = "outputs/golden_proposed.json"
 N = int(sys.argv[sys.argv.index("--n") + 1]) if "--n" in sys.argv else 1
@@ -79,6 +106,9 @@ def call_openrouter(model, system, user, max_tokens, temperature, seed):
             print(f"    retry after {type(e).__name__}: {e}"); time.sleep(6 * (attempt + 1))
 
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
+if "openai_responses" in PROVIDERS_USED and not OPENAI_KEY:   # fail fast, never send "Bearer None"
+    raise SystemExit('OPENAI_API_KEY is not set, but MODELS contains model(s) with provider '
+                     '"openai_responses" - export your OpenAI key before proposing references.')
 OPENAI_URL = "https://api.openai.com/v1/responses"
 
 
@@ -151,6 +181,9 @@ for t, c in todo:
     key = f'{t["task"]}/{c["id"]}'
     # proposal seeds are disjoint from the sweep SEEDS: otherwise the frontier's identical sweep
     # cell (same model+seed) would trivially match its own reference by construction (M7).
+    # CAVEAT: that protection only holds on the "openrouter" path. call_openai_responses() does not
+    # forward `seed` at all, so on the "openai_responses" path this proposal call and the frontier's
+    # sweep cells are the same request - seed-disjointness buys nothing there (references/providers.md).
     frontier_cfg = MODEL_BY_ID[FRONTIER]
     props = [call_for_model(frontier_cfg, t, c, 9001 + i) for i in range(N)]
     golden[key] = {"split": c["split"], "hard": c.get("hard", False),

@@ -15,6 +15,10 @@ Honesty (matches this skill's own rules):
     repeats are near-replicates, not independent trials - effective n = number of cases, not cells.
   - Prints the minimum difference detectable at this n; "tied" means NOT SEPARABLE at this n,
     which is absence of evidence, not proof of equivalence.
+  - A cell with an UNKNOWN cost (cost=None: e.g. a provider whose model has no tasks.py PRICING
+    entry) is never counted as $0. Any such cell makes that model's $/call and savings read "n/a"
+    (null in grade_agg.json). A fabricated "$0.0000/call, 100% saved" is the exact business number
+    this tool exists to get right.
 
 Usage:  python3 grade.py            (no API calls - pure local computation)
 Output: prints the console report; also writes outputs/grade_agg.json (structured mirror of the
@@ -205,26 +209,49 @@ print("COST & LATENCY (per call, measured - includes reasoning-token burn; mean 
 print("=" * 96)
 def p90(xs): return sorted(xs)[min(len(xs) - 1, int(math.ceil(0.9 * len(xs)) - 1))] if xs else float("nan")
 costs = defaultdict(list); lats = defaultdict(list); rtoks = defaultdict(list); empties = defaultdict(int)
+unpriced = defaultdict(int); ncells = defaultdict(int)
 for r in RAW:
     if r.get("error"): continue                # M10: error cells excluded from cost math
     m = r["model"]
-    costs[m].append(r.get("cost", 0) or 0); lats[m].append(r.get("latency_s", 0) or 0)
+    ncells[m] += 1
+    c = r.get("cost")                          # None (or absent) = cost UNKNOWN, not $0 - never coerce it
+    if c is None: unpriced[m] += 1
+    else: costs[m].append(c)
+    lats[m].append(r.get("latency_s", 0) or 0)
     rtoks[m].append(r.get("reasoning_tokens", 0) or 0)
     empties[m] += 0 if r.get("content", "").strip() else 1
-fr_cost = statistics.mean(costs[FRONTIER]) if costs.get(FRONTIER) else float("nan")
-cost_agg = {"frontier": FRONTIER, "frontier_cost": nan_to_none(fr_cost), "models": {}}
-for m in sorted(MODELS_ORDER, key=lambda m: statistics.mean(costs[m]) if costs.get(m) else 9e9):
+
+def mean_cost(m):                              # None = "we do not know", which is NOT the same as 0.0
+    if unpriced[m] or not costs.get(m):        # ANY unknown cell poisons the mean: report n/a, not a fake number
+        return None
+    return statistics.mean(costs[m])
+
+fr_cost = mean_cost(FRONTIER) if ncells.get(FRONTIER) else None
+cost_agg = {"frontier": FRONTIER, "frontier_cost": fr_cost, "models": {}}
+for m in sorted(MODELS_ORDER, key=lambda m: mean_cost(m) if mean_cost(m) is not None else 9e9):
+    if not ncells.get(m): continue
     c = costs.get(m, [])
-    if not c: continue
-    mean_c = statistics.mean(c); se_c = statistics.stdev(c) / math.sqrt(len(c)) if len(c) > 1 else 0.0
-    saved = (1 - mean_c / fr_cost) * 100 if fr_cost == fr_cost and fr_cost > 0 else float("nan")
-    print(f'  {m.split("/")[-1]:26s} n={len(c):3d}  ${mean_c:.4f}+/-{se_c:.4f}/call  '
+    mean_c = mean_cost(m)
+    se_c = (statistics.stdev(c) / math.sqrt(len(c)) if len(c) > 1 else 0.0) if mean_c is not None else None
+    saved = ((1 - mean_c / fr_cost) * 100
+             if mean_c is not None and fr_cost is not None and fr_cost > 0 else None)
+    cost_str = (f'${mean_c:.4f}+/-{se_c:.4f}/call' if mean_c is not None
+                else '     n/a (unknown cost)     ')
+    saved_str = f'{saved:5.1f}%' if saved is not None else '  n/a'
+    print(f'  {m.split("/")[-1]:26s} n={ncells[m]:3d}  {cost_str}  '
           f'lat p90={p90(lats[m]):5.1f}s  rtok_med={int(statistics.median(rtoks[m]))//1:5d}  '
-          f'empties={empties[m]}  err={errcells[m]}  saved={saved:5.1f}%')
-    cost_agg["models"][m] = {"mean_cost": mean_c, "se_cost": se_c, "n": len(c),
+          f'empties={empties[m]}  err={errcells[m]}  saved={saved_str}')
+    if unpriced[m]:
+        print(f'      ^ {unpriced[m]}/{ncells[m]} cell(s) have UNKNOWN cost (no PRICING entry in tasks.py) - '
+              f'$/call and saved are n/a for this model, NOT $0.0000/100% saved.')
+    cost_agg["models"][m] = {"mean_cost": mean_c, "se_cost": se_c, "n": ncells[m],
+                              "n_unpriced_cells": unpriced[m],
                               "p90_latency": nan_to_none(p90(lats[m])), "rtok_med": int(statistics.median(rtoks[m])),
-                              "empties": empties[m], "err": errcells[m], "saved_pct": nan_to_none(saved)}
-print(f"\nfrontier baseline: {FRONTIER}  ${fr_cost:.4f}/call (measured)")
+                              "empties": empties[m], "err": errcells[m], "saved_pct": saved}
+print(f"\nfrontier baseline: {FRONTIER}  "
+      + (f"${fr_cost:.4f}/call (measured)" if fr_cost is not None
+         else "$n/a/call - the frontier's own cost is unknown (no PRICING entry), so NO savings "
+              "percentage can be computed for any candidate."))
 print("Note: savings driven by one runaway cell are fragile - check the per-call stderr and run_sweep's top-cost cells.")
 print("Next: judge.py for subjective quality, then fill templates/report_template.md.")
 
