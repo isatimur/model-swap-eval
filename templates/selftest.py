@@ -8,9 +8,12 @@ scripts resolve `from tasks import ...` against their own directory, not the cal
 Note on the openai_responses run_sweep.py fixture below: its no-network guarantee holds only
 because the fixture's outputs/seeds_raw.json cell carries a prompt_hash that matches run_sweep.py's
 own prompt_hash() for that task/case. If that hash ever mismatches (e.g. the two payloads drift out
-of sync), run_sweep.py will treat the cell as not-yet-run and attempt one real HTTPS call to
-api.openai.com with a dummy key - the "0 cells to run" check below will still catch the drift and
-fail red, but only after that call has already gone out.
+of sync), run_sweep.py will treat the cell as not-yet-run and call_retry() will attempt up to
+several real HTTPS calls to api.openai.com with a dummy key, with retry/backoff sleeps that can add
+up to 16+ cumulative seconds - which could be slow, but the "0 cells to run" check below will still
+eventually report a failure (or, in the worst case, the subprocess call could time out and crash
+the harness rather than failing cleanly, since run() uses a 30s subprocess timeout with no
+exception handling around it).
 
 Covers three regressions caught by an upstream audit:
   1. grade.py: a numeric-kind task falling back to a golden_proposed.json reference (no "ref" in
@@ -200,7 +203,7 @@ shutil.rmtree(d, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
-print("\nrun_sweep.py: an openai_responses-only tasks.py must load and dispatch correctly (no network call)")
+print("\nrun_sweep.py: an openai_responses-only tasks.py must load and resume correctly with a pre-cached cell (no network call)")
 d = workdir("run_sweep.py")
 write(os.path.join(d, "tasks.py"), '''
 FRONTIER = "gpt-5.4-mini"
@@ -219,13 +222,15 @@ write(os.path.join(d, "outputs", "seeds_raw.json"), json.dumps([
      "content": "{}", "content_json": {"action": "allow"}, "cost": 0.0},
 ]))
 # Pre-seeding the one job as an already-cached, correctly-hashed cell (rather than pointing this at a
-# real endpoint) is the only way to prove "loads and dispatches correctly" without spending anything or
-# risking a live call: an openai_responses model with no cached cell WOULD attempt a real HTTPS request.
+# real endpoint) is the only way to prove MODELS-parsing and resume/hash-matching don't break for an
+# openai_responses entry, without spending anything or risking a live call. Because the cell is
+# pre-cached, `jobs` ends up empty here and call_for_model() (the actual provider-routing/dispatch
+# function) is never invoked - this does NOT exercise dispatch/routing to openai_responses.
 p = run(d, "run_sweep.py")
 check("run_sweep.py exits 0 for an openai_responses-only tasks.py", p.returncode == 0, p.stderr[-2000:])
 check("resume recognizes the cached cell for the openai_responses model",
       "resuming: 1 cells already present" in p.stdout, p.stdout)
-check("0 cells to run - dispatch resolved without ever reaching the network",
+check("0 cells to run - fixture loads and resumes with zero jobs left (dispatch/routing not exercised)",
       "0 cells to run" in p.stdout, p.stdout)
 shutil.rmtree(d, ignore_errors=True)
 
