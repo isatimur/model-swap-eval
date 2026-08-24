@@ -30,10 +30,23 @@ Same as upstream (`references/methodology.md`), plus: declare each model's `prov
 `tasks.py`, and for `"openai_responses"` tasks, supply `"json_schema"` on the task and a dict
 (not a string) for each case's `"input"`.
 
+Every template resolves `from tasks import ...` against **its own directory**, so the templates
+get copied next to your `tasks.py` and run from there - they are scaffolds, not an installed
+package:
+
 ```bash
-python3 templates/selftest.py     # offline, no API key - run this first, always
-python3 templates/preflight.py validate
+python3 templates/selftest.py            # offline, no API key - run this first, always
+
+mkdir -p work && cp templates/*.py work/ && cd work
+$EDITOR tasks.py                         # schema: docstring at the top of build_golden.py
+python3 preflight.py validate            # offline schema check, no API key needed
+python3 preflight.py estimate            # optional; needs OR_KEY, prices openrouter models only
 ```
+
+Then `build_golden.py` -> (human validation) -> `run_sweep.py` -> `grade.py` -> `build_report.py`,
+the run order in `SKILL.md`. API keys are demanded only where a provider is actually used:
+`OR_KEY` for `provider: "openrouter"` models, `OPENAI_API_KEY` for `provider: "openai_responses"`.
+For a ready-made openai_responses `tasks.py`, see `examples/offer_gate_decision/`.
 
 ## Credits
 

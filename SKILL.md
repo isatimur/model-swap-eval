@@ -1,9 +1,13 @@
 ---
-name: oss-migration-eval
-description: Decide rigorously whether to switch an expensive LLM pipeline (Opus/Fable-class) to a cheaper or open-source model - estimate cost savings vs accuracy loss and produce an honest go/no-go verdict with error bars. Use when the user asks "can a cheaper/OSS model replace X", "switch/migrate this pipeline to open source", "downshift the model", "which model can replace X", "am I overpaying for this LLM task", "reduce token cost", "evaluate OSS alternatives", or "cost vs accuracy". Builds a frontier-model golden set (incl. trap cases), sweeps provider-pinned OpenRouter candidates across seeds, and reports statistically-tied vs clearly-worse - it refuses bad-fit candidates (one-off tasks, no checkable output, safety-critical quality bars, pipelines the frontier model itself hasn't stabilized).
+name: model-swap-eval
+description: Decide rigorously whether to switch an expensive LLM pipeline (Opus/Fable-class) to a cheaper or open-source model - estimate cost savings vs accuracy loss and produce an honest go/no-go verdict with error bars. Use when the user asks "can a cheaper/OSS model replace X", "switch/migrate this pipeline to open source", "downshift the model", "which model can replace X", "am I overpaying for this LLM task", "reduce token cost", "evaluate OSS alternatives", or "cost vs accuracy". Builds a frontier-model golden set (incl. trap cases), sweeps candidates across seeds either through provider-pinned OpenRouter or against a provider's own API directly (OpenAI Responses API, strict JSON-schema mode - so the sweep can match a production calling pattern OpenRouter cannot reproduce), and reports statistically-tied vs clearly-worse - it refuses bad-fit candidates (one-off tasks, no checkable output, safety-critical quality bars, pipelines the frontier model itself hasn't stabilized).
 ---
 
-# OSS Migration Eval
+# Model Swap Eval
+
+A hard fork of `oss-migration-eval`: same methodology, plus direct-provider support (see
+`references/providers.md`) so a task that calls a provider's API directly in production can be
+swept the way production actually calls it.
 
 The methodology in one breath: find the fattest recurring task, build a human-validated golden set on the frontier model (with trap cases), sweep cheap candidates 5 seeds each on pinned providers, grade deterministically where possible, and present cost-savings vs accuracy-loss as a business decision - then deploy the swap behind a smart orchestrator, never as a full-agent replacement.
 
@@ -49,7 +53,7 @@ Full procedure with rationale and per-step artifacts in `references/methodology.
 - A migration candidate must be high-frequency, high-cost, repeatable, and have a checkable output. Migrate one narrow task at a time, never "the pipeline."
 - Run the triage gates (`references/triage.md`) on each candidate now: material spend, checkable output, tolerance for any quality dip, a stable frontier baseline, a stable task definition, and "is this even a model-cost problem or is it prompt bloat/caching."
 - Refuse or redirect bad fits here, before any harness exists.
-- Once `tasks.py` has a first draft, run `templates/preflight.py validate` (free, offline) before spending anything - it catches schema mistakes (duplicate case ids, an unsigned-off pasted ref, a bad `kind`) that the later scripts would otherwise discover mid-sweep. `preflight.py estimate` (needs `OR_KEY`) gives a live worst-case $ ceiling before `run_sweep.py` runs.
+- Once `tasks.py` has a first draft, run `templates/preflight.py validate` (free, offline) before spending anything - it catches schema mistakes (duplicate case ids, an unsigned-off pasted ref, a bad `kind`) that the later scripts would otherwise discover mid-sweep. `preflight.py estimate` (needs `OR_KEY`) gives a live worst-case $ ceiling before `run_sweep.py` runs - it prices OpenRouter models only, and lists-and-skips any `provider: "openai_responses"` model (no OpenRouter pricing exists for a direct call; use that provider's rate card via `tasks.py`'s `PRICING`).
 
 ### Step 1 - Frame the task, choose the accuracy metric
 
@@ -121,13 +125,13 @@ Load each on demand during the step that needs it. Do not preload.
 
 ## Templates map and run order
 
-All templates read the API key from env `OR_KEY`, are resumable, and print progress. They share one contract: a `tasks.py` the agent fills in with the user - schema documented at the top of `templates/build_golden.py` (tasks, cases, references, splits, models, seeds, judges, banned phrases).
+The templates read each API key from the environment, and demand only the keys the declared providers actually use: `OR_KEY` for `provider: "openrouter"` models (the default), `OPENAI_API_KEY` for `provider: "openai_responses"` models. A key needed by a declared provider and missing is a fail-fast error, not a silent `Bearer None`. All templates are resumable and print progress. They share one contract: a `tasks.py` the agent fills in with the user - schema documented at the top of `templates/build_golden.py` (tasks, cases, references, splits, models + providers, seeds, judges, banned phrases, optional `PRICING`).
 
-Typical run order in a fresh working directory:
+Typical run order in a fresh working directory (copy `templates/*.py` next to your `tasks.py` - each script resolves `from tasks import ...` against its own directory):
 
 1. Write `tasks.py` (tasks + cases; references empty where unknown)
 2. `preflight.py validate` - offline schema check, free, before anything else touches an API
-3. `preflight.py estimate` - live pricing -> worst-case $ ceiling + a remaining-credit check
+3. `preflight.py estimate` - live pricing -> worst-case $ ceiling + a remaining-credit check (OpenRouter models only; direct-provider models are skipped with a note - price them from the provider's rate card in `tasks.py`'s `PRICING`)
 4. `build_golden.py` - propose frontier references, assign splits, STOP for human validation
 5. `pick_candidates.py discover` then `pin` - live shortlist data + `provider_pins.json`
 6. `run_sweep.py` - the N-seed pinned sweep -> `outputs/seeds_raw.json`
@@ -141,7 +145,7 @@ Typical run order in a fresh working directory:
 - Providers: `"openrouter"` (default, unchanged from upstream) or `"openai_responses"` (direct
   OpenAI Responses API, `strict` JSON-schema mode) - declared per model in `tasks.py`'s `MODELS`.
   See `references/providers.md`.
-- `templates/grade.py` - deterministic metrics per task type, pass-rate/MAE with error bars, pairwise z-tests, cost-savings table; also persists `outputs/grade_agg.json` for `build_report.py`
+- `templates/grade.py` - deterministic metrics per task type, pass-rate/MAE with error bars, pairwise z-tests, cost-savings table; also persists `outputs/grade_agg.json` for `build_report.py`. A model whose cells carry an unknown cost (a direct-provider model with no `PRICING` entry) gets `n/a` for `$/call` and `saved` - never a fabricated `$0.0000` or `100% saved`
 - `templates/judge.py` - blind, shuffled, multi-family panel across seeds; mean +/- std +/- stderr with CI; advisory-only fabrication flags; persists `outputs/judge_agg.json`
 - `templates/build_report.py` - mechanically assembles `outputs/report.md` from `grade_agg.json`/`judge_agg.json` - never decides the verdict or per-task recommendation itself; those stay `<FILL IN>` placeholders (rigor.md: that judgment is the user's)
 - `templates/report_template.md` - the decision report skeleton `build_report.py` follows

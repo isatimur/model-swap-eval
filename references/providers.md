@@ -32,13 +32,30 @@ speculatively.
 
 ## What does NOT change per provider
 
-The statistical methodology (seeds, case-clustered stats, tied-vs-worse framing), the golden-set
-discipline (human validation, hard/trap cases), `preflight.py`, `build_report.py`. Only how a cell's
-raw model call is made, and whether `grade.py` needs to parse text or can trust an already-structured
-result (`content_json`), differ by provider.
+The case-clustered statistics and tied-vs-worse framing, the golden-set discipline (human
+validation, hard/trap cases), and `build_report.py`. Only how a cell's raw model call is made, and
+whether `grade.py` needs to parse text or can trust an already-structured result (`content_json`),
+differ by provider.
 
-## Known limitations
+## Known limitations of the `openai_responses` path
 
-`preflight.py estimate()` does not yet support `provider: "openai_responses"` models (it will crash
-on a dict-shaped MODELS entry) - only `preflight.py validate()` is provider-aware today; a future
-pass should extend `estimate()` similarly.
+Read these before quoting any number produced through it.
+
+- **Seeds do not vary the request.** `call_openai_responses()` forwards neither `seed` nor
+  `temperature` nor `max_tokens`. So N seeds issue N *identical* requests, and the per-seed spread
+  measures only whatever nondeterminism the endpoint itself has - it is not the seed-variance noise
+  floor rigor.md #1 asks for. Report it as such, and do not read a tight spread as stability.
+  For the same reason, `build_golden.py`'s seed-disjointness protection (its "M7" comment: proposal
+  seeds 9001+ vs the sweep's SEEDS, so the frontier cannot trivially match its own reference) holds
+  only on the `openrouter` path. On this path the proposal call and the frontier's sweep cells are
+  the same request.
+- **Cost is not reported by the API, so it comes from `tasks.py`'s `PRICING` dict or not at all.**
+  A model with no `PRICING` entry has UNKNOWN cost. `run_sweep.py` warns once per model,
+  `grade.py` prints `n/a` for that model's `$/call` and `saved`, and `grade_agg.json` carries
+  `null` - never `$0.0000`, never `100% saved`.
+- **`preflight.py estimate` prices OpenRouter models only.** It lists and skips
+  `openai_responses` models (they have no OpenRouter `/models` pricing) and exits with a clear
+  message if that leaves nothing to price. `preflight.py validate` is fully provider-aware.
+- **Providers cannot be mixed inside one `tasks.py`.** A case's `input` is a string prompt for
+  `openrouter` and a dict payload for `openai_responses`; one set of cases cannot satisfy both, so
+  `preflight.py validate` errors on a mixed `MODELS`. Run the two provider sets as two evals.
