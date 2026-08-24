@@ -197,7 +197,7 @@ print("\npreflight.py validate: must catch every injected schema error, and pass
 d = workdir("preflight.py")
 write(os.path.join(d, "tasks.py"), '''
 FRONTIER = "test-vendor/frontier-model"
-MODELS = [FRONTIER, "test-vendor/cheap-model"]
+MODELS = [{"id": FRONTIER, "provider": "openrouter"}, {"id": "test-vendor/cheap-model", "provider": "openrouter"}]
 SEEDS = [11, 23]
 TASKS = [{
     "task": "t", "kind": "numeric", "system": "s", "max_tokens": 10, "temperature": 0.0,
@@ -222,7 +222,7 @@ clean_cases = ",\n".join(
 )
 write(os.path.join(d, "tasks.py"), f'''
 FRONTIER = "test-vendor/frontier-model"
-MODELS = [FRONTIER, "test-vendor/cheap1", "test-vendor/cheap2", "test-vendor/cheap3"]
+MODELS = [{{"id": FRONTIER, "provider": "openrouter"}}, {{"id": "test-vendor/cheap1", "provider": "openrouter"}}, {{"id": "test-vendor/cheap2", "provider": "openrouter"}}, {{"id": "test-vendor/cheap3", "provider": "openrouter"}}]
 SEEDS = [11, 23, 42, 77, 101]
 TASKS = [{{
     "task": "t", "kind": "numeric", "system": "s", "max_tokens": 10, "temperature": 0.0,
@@ -233,6 +233,29 @@ p = subprocess.run([sys.executable, "preflight.py", "validate"], cwd=d,
                     env=dict(os.environ, OR_KEY="dummy-not-used"), capture_output=True, text=True, timeout=30)
 check("preflight.py validate exits 0 on a well-formed tasks.py", p.returncode == 0, p.stdout)
 check("reports 0 errors on the clean fixture", "0 error(s)" in p.stdout, p.stdout)
+shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+print("\npreflight.py validate: must catch a missing json_schema and a provider/input-type mismatch")
+d = workdir("preflight.py")
+write(os.path.join(d, "tasks.py"), '''
+FRONTIER = "test-vendor/frontier-model"
+MODELS = [{"id": FRONTIER, "provider": "openai_responses"}]
+SEEDS = [11, 23, 42]
+TASKS = [{
+    "task": "t", "kind": "structured", "system": "s", "max_tokens": 10, "temperature": 0.0,
+    # no "json_schema" - required when a model uses provider "openai_responses"
+    "cases": [
+        {"id": "c0", "input": "this should be a dict, not a string"},
+    ],
+}]
+''')
+p = subprocess.run([sys.executable, "preflight.py", "validate"], cwd=d,
+                    env=dict(os.environ, OR_KEY="dummy-not-used"), capture_output=True, text=True, timeout=30)
+check("preflight.py validate exits 1 on a broken openai_responses tasks.py", p.returncode == 1, p.stdout)
+check("catches missing json_schema", "json_schema" in p.stdout, p.stdout)
+check("catches a string \"input\" where openai_responses needs a dict", "must be a dict" in p.stdout, p.stdout)
 shutil.rmtree(d, ignore_errors=True)
 
 

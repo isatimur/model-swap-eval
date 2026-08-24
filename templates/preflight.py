@@ -40,11 +40,21 @@ def validate():
     def err(msg): errors.append(msg)
     def warn(msg): warnings.append(msg)
 
-    if FRONTIER not in MODELS:
+    model_ids = []
+    for i, m in enumerate(MODELS):
+        if not isinstance(m, dict) or "id" not in m:
+            err(f"MODELS[{i}] must be a dict with an \"id\" key, got {m!r}")
+            continue
+        model_ids.append(m["id"])
+        provider = m.get("provider", "openrouter")
+        if provider not in ("openrouter", "openai_responses"):
+            err(f'MODELS[{i}] ("{m["id"]}"): provider="{provider}" - must be "openrouter" or "openai_responses"')
+
+    if FRONTIER not in model_ids:
         err(f'FRONTIER "{FRONTIER}" is not in MODELS - the incumbent must be swept too (rigor.md #1).')
-    if len(MODELS) != len(set(MODELS)):
-        err(f"MODELS has duplicate entries: {[m for m in MODELS if MODELS.count(m) > 1]}")
-    non_frontier = [m for m in MODELS if m != FRONTIER]
+    if len(model_ids) != len(set(model_ids)):
+        err(f"MODELS has duplicate ids: {[i for i in model_ids if model_ids.count(i) > 1]}")
+    non_frontier = [i for i in model_ids if i != FRONTIER]
     if not (3 <= len(non_frontier) <= 8):
         warn(f"{len(non_frontier)} non-frontier candidate(s) in MODELS - candidate-selection.md "
              f"recommends 4-8 spanning the price range (below 4 you learn too little).")
@@ -72,6 +82,15 @@ def validate():
         kind = t.get("kind")
         if kind not in VALID_KINDS:
             err(f'{tname}: kind="{kind}" - must be one of {sorted(VALID_KINDS)}')
+        models_by_id = {m["id"]: m for m in MODELS if isinstance(m, dict) and "id" in m}
+        task_model_providers = {models_by_id[mid].get("provider", "openrouter") for mid in model_ids if mid in models_by_id}
+        if len(task_model_providers) > 1:
+            warn(f"{tname}: MODELS mixes providers ({sorted(task_model_providers)}) - fine if "
+                 f"deliberate (comparing across calling patterns), but confirm that's the intent.")
+        if "openai_responses" in task_model_providers:
+            if "json_schema" not in t:
+                err(f'{tname}: at least one model uses provider "openai_responses" but the task has '
+                    f'no "json_schema" - required for strict-mode structured output.')
         cases = t.get("cases") or []
         if not cases:
             err(f"{tname}: no cases")
@@ -96,6 +115,12 @@ def validate():
                 err(f"{tname}: a case is missing \"id\"")
             if "input" not in c or not c.get("input"):
                 err(f"{tag}: missing or empty \"input\"")
+            if "openai_responses" in task_model_providers and not isinstance(c.get("input"), dict):
+                err(f'{tag}: task uses provider "openai_responses" - case "input" must be a dict '
+                    f'(the JSON payload), got {type(c.get("input")).__name__}')
+            if task_model_providers == {"openrouter"} and isinstance(c.get("input"), dict):
+                err(f'{tag}: task uses only provider "openrouter" - case "input" must be a string '
+                    f'prompt, got a dict')
             if c.get("hard") or c.get("trap"):
                 has_hard_or_trap = True
             if "ref" in c and c["ref"] is not None and kind in ("structured", "numeric"):
@@ -123,7 +148,7 @@ def validate():
         if len(JUDGES) < 3:
             err(f"a subjective task exists but JUDGES has only {len(JUDGES)} entr(y/ies) - rigor.md #6 "
                 f"mandates >= 3.")
-        overlap = {j.split("/")[0] for j in JUDGES} & {m.split("/")[0] for m in MODELS}
+        overlap = {j.split("/")[0] for j in JUDGES} & {i.split("/")[0] for i in model_ids}
         if overlap:
             warn(f"judge family overlaps a candidate family: {overlap} - same-family judges favor "
                  f"their siblings' style (rigor.md #6); judge.py will warn again at run time.")
