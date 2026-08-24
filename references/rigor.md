@@ -26,6 +26,8 @@ OpenRouter load-balances each model across backends serving different quantizati
 
 This isn't a one-off scar - it's a live, recognized failure mode. A LessWrong writeup, ["Not Pinning Your OpenRouter Provider Might Invalidate Your Research"](https://www.lesswrong.com/posts/KsyoSAyBRXtwzSugg/not-pinning-your-openrouter-provider-might-invalidate-your), independently documents the same corruption path across other research codebases and argues most projects using OpenRouter don't pin at all. `pick_candidates.py` and `run_sweep.py` already build and enforce the fix this skill's own scar taught it to need.
 
+The same discipline applies when a task calls a provider directly instead of through OpenRouter (`references/providers.md`) - "provider pinning" doesn't apply to a direct API call (there's only one provider), but "compare like for like" still does: a model swapped in through a different calling pattern than production (e.g. OpenRouter's chat-completions shape vs. a direct Responses-API call with `strict` JSON-schema mode) is not the same experiment as the one that will actually run.
+
 - Pin every candidate to ONE highest-precision provider: `"provider": {"order": ["<name>"], "allow_fallbacks": false}`.
 - Build the pin map from the live endpoints API (precision ranking: fp32 > bf16/fp16 > fp8 > int8 > fp4/int4).
 - Record the served provider on every response and verify the pin held.
