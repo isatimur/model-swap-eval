@@ -18,6 +18,8 @@
 - `MODELS` becomes a breaking schema change from upstream oss-migration-eval — this is a deliberate fork, not bound to upstream compatibility (spec, Architecture).
 - The worked example's golden set uses only cases where the gate model itself decides (no code-level preconditions/overrides in the loop) — self-exclusion and tier-only denials never reach the model, so they are not gradeable model decisions (spec, LifeOS gate worked example).
 
+**Ruling recorded during execution (Task 2's review loop):** the full offline suite (`templates/selftest.py`) must stay green after every task's commits — not just once Task 8 lands. Task 2 discovered that deferring all fixture updates to Task 8 (as originally written below) leaves the suite red across five sequential tasks, which is a real regression. Superseding instruction: **each of Tasks 3, 4, and 7 also updates its own corresponding `selftest.py` fixture(s) in the same task**, immediately after making its template change — before moving to the next step. Task 8 is correspondingly descoped from "convert every existing fixture" to "add new test coverage for the provider paths only" (its Steps 3-5 stand as written; Step 1's fixture-conversion instruction is superseded by this ruling and should be skipped).
+
 ---
 
 ## Task 1: Scaffold the repo from oss-migration-eval
