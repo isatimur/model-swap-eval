@@ -44,7 +44,9 @@ python3 preflight.py estimate            # optional; needs OR_KEY, prices openro
 ```
 
 Then `build_golden.py` -> (human validation) -> `run_sweep.py` -> `grade.py` -> `build_report.py`,
-the run order in `SKILL.md`. API keys are demanded only where a provider is actually used:
+the run order in `SKILL.md`. `build_report_html.py` (optional, after `grade.py`) renders the same
+numbers plus a per-case pass/parsed/hard/trap grid as a single self-contained `outputs/report.html`
+- no server, no build step. API keys are demanded only where a provider is actually used:
 `OR_KEY` for `provider: "openrouter"` models, `OPENAI_API_KEY` for `provider: "openai_responses"`.
 For a ready-made openai_responses `tasks.py`, see `examples/offer_gate_decision/`.
 

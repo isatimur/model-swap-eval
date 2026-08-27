@@ -143,9 +143,10 @@ if JUDGE and JUDGE.get("agg"):
 
 emit("## Deterministic findings (these carry more weight than the panel)")
 emit()
-emit("Fabrication rates, trap/boundary-case results, and format/guard-violation counts are printed "
-     "per-case by grade.py's console output but are not persisted to grade_agg.json (they are "
-     "case-level detail, not a clean aggregate) - copy the relevant lines from that run here.")
+emit("Fabrication rates, trap/boundary-case results, and parse-failure counts are persisted "
+     "per-(task,case,model) in outputs/grade_agg.json's \"cases\" array (grade.py) - run "
+     "build_report_html.py for a rendered per-case grid, or copy the relevant lines from "
+     "grade.py's console output here.")
 emit()
 emit("## Recommendation per task")
 emit()
