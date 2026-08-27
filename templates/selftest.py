@@ -683,6 +683,81 @@ check("Recommendation/Deployment sections stay visibly unfilled (FILL IN present
 shutil.rmtree(d, ignore_errors=True)
 
 # ---------------------------------------------------------------------------
+print("\nbuild_report_html.py: a grade_agg.json with no cases array must not silently drop the per-case section")
+d = workdir("build_report_html.py")
+write(os.path.join(d, "tasks.py"), '''
+FRONTIER = "test-vendor/frontier-model"
+MODELS = [{"id": FRONTIER, "provider": "openrouter"}]
+SEEDS = [11]
+TASKS = [{
+    "task": "extract", "kind": "structured", "system": "s", "max_tokens": 10, "temperature": 0.0,
+    "cases": [{"id": "c0", "input": "x"}],
+}]
+''')
+write(os.path.join(d, "outputs", "grade_agg.json"), json.dumps({
+    "deterministic": {"n_cases": 1, "mdd_pp": None, "models": {
+        "test-vendor/frontier-model": {"pass_rate": 1.0, "se": None, "n_cases": 1, "z_vs_best": 0.0,
+                   "verdict": "not separable from best (tied != equivalent)", "is_frontier": True},
+    }},
+    "cost": {"frontier": "test-vendor/frontier-model", "frontier_cost": 0.01, "models": {
+        "test-vendor/frontier-model": {"mean_cost": 0.01, "se_cost": 0.0, "n": 1, "p90_latency": 1.0,
+                   "rtok_med": 0, "empties": 0, "err": 0, "saved_pct": 0.0},
+    }},
+}))
+p = run(d, "build_report_html.py")
+check("build_report_html.py exits 0 with a stale (no cases key) grade_agg.json", p.returncode == 0, p.stderr[-2000:])
+report = open(os.path.join(d, "outputs", "report.html")).read()
+check("the report says so instead of silently omitting the per-case section",
+      "No per-case detail" in report, report)
+shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+print("\nbuild_report_html.py: HARD+TRAP both show, empty boundary spread reads clearly, long spread values are truncated")
+d = workdir("build_report_html.py")
+write(os.path.join(d, "tasks.py"), '''
+FRONTIER = "test-vendor/frontier-model"
+MODELS = [{"id": FRONTIER, "provider": "openrouter"}]
+SEEDS = [11, 23, 42]
+TASKS = [{
+    "task": "extract", "kind": "structured", "system": "s", "max_tokens": 10, "temperature": 0.0,
+    "cases": [
+        {"id": "both_tags", "input": "x", "hard": True, "trap": True},
+        {"id": "empty_spread", "input": "x"},
+        {"id": "long_value", "input": "x"},
+    ],
+}]
+''')
+long_val = "x" * 200
+write(os.path.join(d, "outputs", "grade_agg.json"), json.dumps({
+    "deterministic": None,
+    "cost": {"frontier": "test-vendor/frontier-model", "frontier_cost": None, "models": {}},
+    "cases": [
+        {"task": "extract", "case_id": "both_tags", "kind": "structured", "model": "test-vendor/frontier-model",
+         "split": "val", "hard": True, "trap": True, "note": None,
+         "n": 3, "parsed": 3, "ok": 3, "mae": None, "tolerance": None, "fabricated": None,
+         "banned": None, "len_violations": None, "boundary_spread": None},
+        {"task": "extract", "case_id": "empty_spread", "kind": "structured", "model": "test-vendor/frontier-model",
+         "split": "val", "hard": False, "trap": False, "note": None,
+         "n": 3, "parsed": 0, "ok": None, "mae": None, "tolerance": None, "fabricated": None,
+         "banned": None, "len_violations": None, "boundary_spread": {}},
+        {"task": "extract", "case_id": "long_value", "kind": "structured", "model": "test-vendor/frontier-model",
+         "split": "val", "hard": False, "trap": False, "note": None,
+         "n": 3, "parsed": 3, "ok": None, "mae": None, "tolerance": None, "fabricated": None,
+         "banned": None, "len_violations": None, "boundary_spread": {"tier": {long_val: 3}}},
+    ],
+}))
+p = run(d, "build_report_html.py")
+check("build_report_html.py exits 0", p.returncode == 0, p.stderr[-2000:])
+report = open(os.path.join(d, "outputs", "report.html")).read()
+check("a case that is both hard and trap shows BOTH tags", "HARD" in report and "TRAP" in report, report)
+check("an empty boundary spread reads '(no JSON parsed)', not a dangling separator",
+      "(no JSON parsed)" in report, report)
+check("a long boundary-spread value is truncated, not inlined in full",
+      "..." in report and (long_val not in report), report)
+shutil.rmtree(d, ignore_errors=True)
+
+# ---------------------------------------------------------------------------
 print()
 if FAILURES:
     print(f"FAILED: {len(FAILURES)} check(s): {FAILURES}")

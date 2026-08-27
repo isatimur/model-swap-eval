@@ -36,6 +36,7 @@ def short(m): return m.split("/")[-1]
 def fmt_pct(x, dp=1): return "n/a" if x is None else f"{x:.{dp}f}%"
 def fmt_money(x): return "n/a" if x is None else f"${x:.4f}"
 def fmt_num(x, dp=2): return "n/a" if x is None else f"{x:.{dp}f}"
+def trunc(s, n=80): return s if len(s) <= n else s[:n] + "..."
 
 
 n_cases = sum(len(t["cases"]) for t in TASKS)
@@ -154,8 +155,8 @@ if GRADE and GRADE.get("cases"):
     emit("<table class='grid'><thead><tr><th>Case</th>"
          + "".join(f"<th>{esc(short(m))}</th>" for m in models_order) + "</tr></thead><tbody>")
     for (task, case_id), info in by_case.items():
-        tag = (" <span class='hard'>HARD</span>" if info["hard"]
-               else (" <span class='trap'>TRAP</span>" if info["trap"] else ""))
+        tag = ((" <span class='hard'>HARD</span>" if info["hard"] else "")
+               + (" <span class='trap'>TRAP</span>" if info["trap"] else ""))
         emit(f"<tr><td>{esc(task)}/{esc(case_id)}{tag}"
              + (f"<div class='casenote'>{esc(info['note'])}</div>" if info.get("note") else "") + "</td>")
         for m in models_order:
@@ -165,13 +166,14 @@ if GRADE and GRADE.get("cases"):
             elif r.get("boundary_spread") is not None:
                 parts = []
                 for field, counts in r["boundary_spread"].items():
-                    counts_txt = ", ".join(f"{esc(val)}={cnt}" for val, cnt in counts.items())
+                    counts_txt = ", ".join(f"{esc(trunc(str(val)))}={cnt}" for val, cnt in counts.items())
                     parts.append(f"{esc(field)}: {counts_txt}")
+                spread_txt = "; ".join(parts) if parts else "(no JSON parsed)"
                 parsed, n = r.get("parsed"), r.get("n")
                 cls = "boundary parsefail" if parsed is not None and n is not None and parsed < n else "boundary"
                 extra = (f" <span class='parsefail'>(parsed {parsed}/{n})</span>"
                          if parsed is not None and n is not None and parsed < n else "")
-                emit(f"<td class='{cls}'>spread &mdash; {'; '.join(parts)}{extra}</td>")
+                emit(f"<td class='{cls}'>spread &mdash; {spread_txt}{extra}</td>")
             elif r.get("mae") is not None:
                 emit(f"<td>MAE={r['mae']:.2f} ok {r['ok']}/{r['n']}</td>")
             elif r.get("fabricated") is not None:
@@ -184,6 +186,10 @@ if GRADE and GRADE.get("cases"):
                 emit(f"<td class='{cls}'>{ok}/{n}{extra}</td>")
         emit("</tr>")
     emit("</tbody></table>")
+elif GRADE:
+    emit("<h2>Per-case detail</h2>")
+    emit("<p class='note'>No per-case detail in outputs/grade_agg.json - re-run grade.py "
+         "(this repo's version) to populate it.</p>")
 
 emit("<h2>Recommendation per task</h2>")
 emit("<table><thead><tr><th>Task</th><th>Recommendation</th>"
