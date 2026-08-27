@@ -615,6 +615,72 @@ check("subjective row has fabricated/banned/len_violations set, mae null",
 shutil.rmtree(d, ignore_errors=True)
 
 # ---------------------------------------------------------------------------
+print("\nbuild_report_html.py: must assemble a self-contained HTML report with per-case detail")
+d = workdir("build_report_html.py")
+write(os.path.join(d, "tasks.py"), '''
+FRONTIER = "test-vendor/frontier-model"
+MODELS = [{"id": FRONTIER, "provider": "openrouter"}, {"id": "test-vendor/cheap-model", "provider": "openrouter"}]
+SEEDS = [11, 23, 42]
+TASKS = [{
+    "task": "extract", "kind": "structured", "system": "s", "max_tokens": 10, "temperature": 0.0,
+    "cases": [
+        {"id": "normal", "input": "x", "hard": True},
+        {"id": "boundary", "input": "x"},
+    ],
+}]
+''')
+write(os.path.join(d, "outputs", "grade_agg.json"), json.dumps({
+    "deterministic": {"n_cases": 1, "mdd_pp": 15.0, "models": {
+        "test-vendor/frontier-model": {"pass_rate": 1.0, "se": None, "n_cases": 1, "z_vs_best": 0.0,
+                   "verdict": "not separable from best (tied != equivalent)", "is_frontier": True},
+        "test-vendor/cheap-model": {"pass_rate": 0.5, "se": None, "n_cases": 1, "z_vs_best": 5.0,
+                                     "verdict": "CLEARLY WORSE", "is_frontier": False},
+    }},
+    "cost": {"frontier": "test-vendor/frontier-model", "frontier_cost": 0.01, "models": {
+        "test-vendor/frontier-model": {"mean_cost": 0.01, "se_cost": 0.0, "n": 3, "p90_latency": 1.0,
+                   "rtok_med": 0, "empties": 0, "err": 0, "saved_pct": 0.0},
+        "test-vendor/cheap-model": {"mean_cost": 0.002, "se_cost": 0.0, "n": 3, "p90_latency": 0.5,
+                                     "rtok_med": 0, "empties": 0, "err": 0, "saved_pct": 80.0},
+    }},
+    "cases": [
+        {"task": "extract", "case_id": "normal", "kind": "structured", "model": "test-vendor/frontier-model",
+         "split": "val", "hard": True, "trap": False, "note": "designed answer: x",
+         "n": 3, "parsed": 3, "ok": 3, "mae": None, "tolerance": None, "fabricated": None,
+         "banned": None, "len_violations": None, "boundary_spread": None},
+        {"task": "extract", "case_id": "normal", "kind": "structured", "model": "test-vendor/cheap-model",
+         "split": "val", "hard": True, "trap": False, "note": "designed answer: x",
+         "n": 3, "parsed": 1, "ok": 0, "mae": None, "tolerance": None, "fabricated": None,
+         "banned": None, "len_violations": None, "boundary_spread": None},
+        {"task": "extract", "case_id": "boundary", "kind": "structured", "model": "test-vendor/frontier-model",
+         "split": "val", "hard": False, "trap": False, "note": None,
+         "n": 3, "parsed": 3, "ok": None, "mae": None, "tolerance": None, "fabricated": None,
+         "banned": None, "len_violations": None, "boundary_spread": {"tier": {"Hot": 3}}},
+        {"task": "extract", "case_id": "boundary", "kind": "structured", "model": "test-vendor/cheap-model",
+         "split": "val", "hard": False, "trap": False, "note": None,
+         "n": 3, "parsed": 3, "ok": None, "mae": None, "tolerance": None, "fabricated": None,
+         "banned": None, "len_violations": None, "boundary_spread": {"tier": {"Cold": 2, "Hot": 1}}},
+    ],
+}))
+p = run(d, "build_report_html.py")
+check("build_report_html.py exits 0", p.returncode == 0, p.stderr[-2000:])
+report_path = os.path.join(d, "outputs", "report.html")
+check("writes outputs/report.html", os.path.exists(report_path))
+report = open(report_path).read() if os.path.exists(report_path) else ""
+check("output is non-empty HTML", report.startswith("<!doctype html>") and "</html>" in report, report[:200])
+check("aggregate table shows the frontier's real pass-rate", "100.0%" in report, report)
+check("aggregate table shows the cheap model's real pass-rate", "50.0%" in report, report)
+check("per-case grid has one row per case", "extract/normal" in report and "extract/boundary" in report, report)
+check("per-case grid has a column for each model", "frontier-model" in report and "cheap-model" in report, report)
+check("a parsed<n cell is visually distinguishable from an ok<n cell (parsefail marker present)",
+      "parsefail" in report and "(parsed 1/3)" in report, report)
+check("boundary case renders its spread dict, not a pass fraction",
+      "spread" in report and "Hot=3" in report, report)
+check("HARD tag is rendered for the hard case", "HARD" in report, report)
+check("Recommendation/Deployment sections stay visibly unfilled (FILL IN present, wrapped in <mark>)",
+      report.count("<mark>") >= 6 and "FILL IN" in report, report)
+shutil.rmtree(d, ignore_errors=True)
+
+# ---------------------------------------------------------------------------
 print()
 if FAILURES:
     print(f"FAILED: {len(FAILURES)} check(s): {FAILURES}")
