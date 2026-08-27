@@ -45,6 +45,9 @@ Plus the honesty/ergonomics regressions caught by the final whole-branch review:
     sending "Bearer None".
   - preflight.py: mixing providers inside one tasks.py is a hard ERROR (the two providers need
     incompatible case "input" shapes), not a soft warning.
+  - preflight.py + judge.py: a judge sharing a model family with a candidate is a hard ERROR in
+    both (rigor.md #6) - previously only a printed WARNING that let the run proceed with a
+    compromised, non-independent panel.
 
 Usage:  python3 selftest.py   (exit 0 = all pass)
 """
@@ -418,6 +421,53 @@ p = subprocess.run([sys.executable, "preflight.py", "validate"], cwd=d,
 check("preflight.py validate exits 1 on a mixed-provider tasks.py", p.returncode == 1, p.stdout)
 check("the mixed-provider finding is an ERROR line, not a WARN line",
       any(l.strip().startswith("ERROR") and "mixes providers" in l for l in p.stdout.splitlines()), p.stdout)
+shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+print("\npreflight.py validate: judge-family overlap with a candidate must be a hard ERROR, not a warning (rigor.md #6)")
+d = workdir("preflight.py")
+overlap_cases = ",\n".join(
+    f'{{"id": "c{i}", "input": "input {i}", "hard": {i == 0}}}'
+    for i in range(5)
+)
+write(os.path.join(d, "tasks.py"), f'''
+FRONTIER = "test-vendor/frontier-model"
+MODELS = [{{"id": FRONTIER, "provider": "openrouter"}}, {{"id": "other-vendor/cheap1", "provider": "openrouter"}}, {{"id": "other-vendor/cheap2", "provider": "openrouter"}}, {{"id": "other-vendor/cheap3", "provider": "openrouter"}}]
+SEEDS = [11, 23, 42, 77, 101]
+JUDGES = ["test-vendor/judge-model", "third-vendor/judge-a", "third-vendor/judge-b"]
+TASKS = [{{
+    "task": "t", "kind": "subjective", "system": "s", "max_tokens": 10, "temperature": 0.0,
+    "rubric": "score this: {{ctx}}",
+    "cases": [{overlap_cases}],
+}}]
+''')
+p = subprocess.run([sys.executable, "preflight.py", "validate"], cwd=d,
+                    env=dict(os.environ, OR_KEY="dummy-not-used"), capture_output=True, text=True, timeout=30)
+check("preflight.py validate exits 1 when a judge shares a family with a candidate",
+      p.returncode == 1, p.stdout)
+check("the judge-family-overlap finding is an ERROR line, not a WARN line",
+      any(l.strip().startswith("ERROR") and "judge family overlaps" in l for l in p.stdout.splitlines()), p.stdout)
+shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+print("\njudge.py: must refuse to run at all when a judge shares a family with a candidate (rigor.md #6)")
+d = workdir("judge.py")
+write(os.path.join(d, "tasks.py"), '''
+FRONTIER = "test-vendor/frontier-model"
+JUDGES = ["test-vendor/judge-model"]
+TASKS = []
+''')
+os.makedirs(os.path.join(d, "outputs"), exist_ok=True)
+write(os.path.join(d, "outputs", "seeds_raw.json"),
+      json.dumps([{"seed": 11, "model": "test-vendor/frontier-model", "task": "t", "case_id": "c0"}]))
+p = subprocess.run([sys.executable, "judge.py"], cwd=d,
+                    env=dict(os.environ, OR_KEY="dummy-not-used"), capture_output=True, text=True, timeout=30)
+check("judge.py exits nonzero on judge-family overlap instead of just warning and continuing",
+      p.returncode != 0, p.stdout + p.stderr)
+check("judge.py's refusal message says ERROR, not WARNING",
+      "ERROR: judge family overlaps candidate family" in (p.stdout + p.stderr), p.stdout + p.stderr)
 shutil.rmtree(d, ignore_errors=True)
 
 

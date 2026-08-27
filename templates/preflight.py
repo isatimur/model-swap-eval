@@ -155,8 +155,9 @@ def validate():
                 f"mandates >= 3.")
         overlap = {j.split("/")[0] for j in JUDGES} & {i.split("/")[0] for i in model_ids}
         if overlap:
-            warn(f"judge family overlaps a candidate family: {overlap} - same-family judges favor "
-                 f"their siblings' style (rigor.md #6); judge.py will warn again at run time.")
+            err(f"judge family overlaps a candidate family: {overlap} - same-family judges favor "
+                f"their siblings' style (rigor.md #6 mandates a different family); replace those "
+                f"judges. judge.py refuses to run on this too.")
 
     print(f"preflight validate: {len(TASKS)} task(s), {len(MODELS)} model(s), {len(SEEDS)} seed(s)\n")
     for w in warnings:

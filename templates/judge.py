@@ -19,7 +19,7 @@ Usage:  OR_KEY=<key> python3 judge.py
 Needs:  tasks.py (JUDGES list + per-task "rubric" with {ctx}), outputs/seeds_raw.json
 Output: outputs/judge_agg.json + console table
 """
-import os, json, time, random, statistics, urllib.request
+import os, sys, json, time, random, statistics, urllib.request
 from collections import defaultdict
 from tasks import TASKS, JUDGES, FRONTIER
 
@@ -31,7 +31,10 @@ SUBJECTIVE = [t for t in TASKS if t["kind"] == "subjective"]
 
 fams = {j.split("/")[0] for j in JUDGES} & {r["model"].split("/")[0] for r in RAW}
 if fams:
-    print(f"WARNING: judge family overlaps candidate family: {fams} - replace those judges (rigor.md #6).")
+    print(f"ERROR: judge family overlaps candidate family: {fams} - same-family judges favor "
+          f"their siblings' style (rigor.md #6 mandates a different family). Replace those "
+          f"judges in tasks.py's JUDGES list before running judge.py again.")
+    sys.exit(1)
 
 def call(model, prompt):
     body = json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}],
