@@ -19,6 +19,9 @@ Honesty (matches this skill's own rules):
     entry) is never counted as $0. Any such cell makes that model's $/call and savings read "n/a"
     (null in grade_agg.json). A fabricated "$0.0000/call, 100% saved" is the exact business number
     this tool exists to get right.
+  - grade_agg.json's "cases" array (one row per task/case/model) carries only counts, means, and
+    small category-label dispersions - the same aggregation level this script's console output
+    already prints. It never carries a raw model completion string.
 
 Usage:  python3 grade.py            (no API calls - pure local computation)
 Output: prints the console report; also writes outputs/grade_agg.json (structured mirror of the
@@ -100,6 +103,17 @@ def first_num(text):
     m = re.search(r"-?\d+\.?\d*", text)
     return float(m.group(0)) if m else None
 
+def nan_to_none(x):                            # NaN isn't valid JSON; null is the honest "n/a" (moved up: base_row needs it)
+    return None if isinstance(x, float) and x != x else x
+
+def base_row(t, case, split, m, n):            # one outputs/grade_agg.json["cases"] row per (task,case,model)
+    return {"task": t["task"], "case_id": case["id"], "kind": t["kind"], "model": m,
+            "split": split, "hard": bool(case.get("hard")), "trap": bool(case.get("trap")),
+            "note": case.get("note"), "n": n, "parsed": None, "ok": None, "mae": None,
+            "tolerance": None, "fabricated": None, "banned": None, "len_violations": None,
+            "boundary_spread": None}
+
+case_rows = []                                 # persisted as grade_agg.json["cases"] - per-case pass/parsed/hard/trap detail
 case_fracs = defaultdict(list)                 # model -> [pass fraction per case]  (case-level unit, M2)
 errcells = defaultdict(int)
 print("=" * 96)
@@ -127,6 +141,10 @@ for t in TASKS:
                                          if isinstance(x, (str, int, float, bool))})
                     spread = {f: dict(Counter(str(get_path(v, f)) for v in vals if v)) for f in fields}
                     print(f'  {name:26s} boundary spread (parsed {parsed}/{len(recs)}): {spread or "(no JSON parsed)"}')
+                    row = base_row(t, case, split, m, len(recs))
+                    row["parsed"] = parsed
+                    row["boundary_spread"] = spread
+                    case_rows.append(row)
                     continue
                 ok = 0
                 for j in vals:
@@ -139,6 +157,10 @@ for t in TASKS:
                     ok += good
                 case_fracs[m].append(ok / len(recs))
                 print(f'  {name:26s} pass {ok}/{len(recs)}  (parsed {parsed}/{len(recs)})')
+                row = base_row(t, case, split, m, len(recs))
+                row["parsed"] = parsed
+                row["ok"] = ok
+                case_rows.append(row)
             elif t["kind"] == "numeric":
                 if not isinstance(ref, (int, float)):
                     print(f'  {name:26s} SKIP: numeric case has no numeric ref'); continue
@@ -149,6 +171,12 @@ for t in TASKS:
                 case_fracs[m].append(ok / len(recs))
                 mae = statistics.mean(errs) if errs else float("nan")
                 print(f'  {name:26s} MAE={mae:.2f}  within +/-{tol}: {ok}/{len(recs)}  unparsed={len(recs)-len(errs)}')
+                row = base_row(t, case, split, m, len(recs))
+                row["parsed"] = len(errs)
+                row["ok"] = ok
+                row["mae"] = nan_to_none(mae)
+                row["tolerance"] = tol
+                case_rows.append(row)
             else:                              # subjective: deterministic guards only
                 innum = metric_tokens(case["input"])
                 nf = nb = nw = 0; ex = ""
@@ -161,9 +189,12 @@ for t in TASKS:
                     ex = ex or (sorted(fab)[0] if fab else "")
                 print(f'  {name:26s} fabricated_metric={nf}/{len(recs)}{" e.g." + ex if ex else ""}  '
                       f'banned={nb}/{len(recs)}  len_violations={nw}/{len(recs)}')
-
-def nan_to_none(x):                            # NaN isn't valid JSON; null is the honest "n/a"
-    return None if isinstance(x, float) and x != x else x
+                row = base_row(t, case, split, m, len(recs))
+                row["parsed"] = len(recs)
+                row["fabricated"] = nf
+                row["banned"] = nb
+                row["len_violations"] = nw
+                case_rows.append(row)
 
 det_agg = None
 cost_agg = None
@@ -255,5 +286,5 @@ print(f"\nfrontier baseline: {FRONTIER}  "
 print("Note: savings driven by one runaway cell are fragile - check the per-call stderr and run_sweep's top-cost cells.")
 print("Next: judge.py for subjective quality, then fill templates/report_template.md.")
 
-json.dump({"deterministic": det_agg, "cost": cost_agg}, open("outputs/grade_agg.json", "w"), indent=2)
+json.dump({"deterministic": det_agg, "cost": cost_agg, "cases": case_rows}, open("outputs/grade_agg.json", "w"), indent=2)
 print("saved -> outputs/grade_agg.json (structured stats for build_report.py)")

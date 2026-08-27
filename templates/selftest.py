@@ -546,6 +546,75 @@ shutil.rmtree(d, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
+print("\ngrade.py: grade_agg.json's cases array must carry per-(task,case,model) detail for every kind")
+d = workdir("grade.py")
+write(os.path.join(d, "tasks.py"), '''
+FRONTIER = "test-vendor/frontier-model"
+MODELS = [{"id": FRONTIER, "provider": "openrouter"}, {"id": "test-vendor/cheap-model", "provider": "openrouter"}]
+SEEDS = [11, 23]
+TASKS = [
+    {
+        "task": "extract", "kind": "structured", "system": "extract",
+        "max_tokens": 100, "temperature": 0.0,
+        "cases": [
+            {"id": "normal", "input": "x", "ref": {"tier": "Hot"}, "validated": True,
+             "ref_fields": ["tier"], "hard": True},
+            {"id": "boundary", "input": "x", "ref": None},
+        ],
+    },
+    {
+        "task": "score", "kind": "numeric", "system": "score it",
+        "max_tokens": 50, "temperature": 0.0,
+        "cases": [{"id": "num1", "input": "x", "ref": 10, "validated": True, "tolerance": 2}],
+    },
+    {
+        "task": "summarize", "kind": "subjective", "system": "summarize",
+        "max_tokens": 100, "temperature": 0.7,
+        "cases": [{"id": "sub1", "input": "x", "ref": None, "word_range": [1, 100]}],
+    },
+]
+''')
+seeds_raw = []
+for m in ("test-vendor/frontier-model", "test-vendor/cheap-model"):
+    for s in (11, 23):
+        seeds_raw.append({"task": "extract", "case": "normal", "model": m, "seed": s,
+                           "content": json.dumps({"tier": "Hot"}), "cost": 0.001})
+        seeds_raw.append({"task": "extract", "case": "boundary", "model": m, "seed": s,
+                           "content": json.dumps({"tier": "Cold"}), "cost": 0.001})
+        seeds_raw.append({"task": "score", "case": "num1", "model": m, "seed": s,
+                           "content": "the score is 9", "cost": 0.001})
+        seeds_raw.append({"task": "summarize", "case": "sub1", "model": m, "seed": s,
+                           "content": "a short summary", "cost": 0.001})
+write(os.path.join(d, "outputs", "seeds_raw.json"), json.dumps(seeds_raw))
+
+p = run(d, "grade.py")
+check("grade.py exits 0", p.returncode == 0, p.stderr[-2000:])
+agg = json.load(open(os.path.join(d, "outputs", "grade_agg.json")))
+cases = agg.get("cases", [])
+check("grade_agg.json has a cases array", isinstance(cases, list) and len(cases) > 0, cases)
+check("cases array has one row per (task,case,model): 4 case-defs x 2 models = 8", len(cases) == 8, cases)
+
+by_case = {(r["case_id"], r["model"]): r for r in cases}
+normal = by_case.get(("normal", "test-vendor/frontier-model"))
+check("structured non-boundary row has parsed and ok set, boundary_spread null",
+      normal and normal["parsed"] == 2 and normal["ok"] == 2 and normal["boundary_spread"] is None, normal)
+check("structured non-boundary row carries hard=True from tasks.py", normal and normal["hard"] is True, normal)
+
+boundary = by_case.get(("boundary", "test-vendor/frontier-model"))
+check("structured boundary row has boundary_spread set, ok null",
+      boundary and boundary["boundary_spread"] and boundary["ok"] is None, boundary)
+
+num = by_case.get(("num1", "test-vendor/frontier-model"))
+check("numeric row has mae and tolerance set, ok set", num and num["mae"] is not None and num["tolerance"] == 2
+      and num["ok"] is not None, num)
+
+sub = by_case.get(("sub1", "test-vendor/frontier-model"))
+check("subjective row has fabricated/banned/len_violations set, mae null",
+      sub and sub["fabricated"] is not None and sub["banned"] is not None
+      and sub["len_violations"] is not None and sub["mae"] is None, sub)
+shutil.rmtree(d, ignore_errors=True)
+
+# ---------------------------------------------------------------------------
 print()
 if FAILURES:
     print(f"FAILED: {len(FAILURES)} check(s): {FAILURES}")
