@@ -657,7 +657,7 @@ write(os.path.join(d, "outputs", "grade_agg.json"), json.dumps({
          "banned": None, "len_violations": None, "boundary_spread": {"tier": {"Hot": 3}}},
         {"task": "extract", "case_id": "boundary", "kind": "structured", "model": "test-vendor/cheap-model",
          "split": "val", "hard": False, "trap": False, "note": None,
-         "n": 3, "parsed": 3, "ok": None, "mae": None, "tolerance": None, "fabricated": None,
+         "n": 3, "parsed": 2, "ok": None, "mae": None, "tolerance": None, "fabricated": None,
          "banned": None, "len_violations": None, "boundary_spread": {"tier": {"Cold": 2, "Hot": 1}}},
     ],
 }))
@@ -675,6 +675,8 @@ check("a parsed<n cell is visually distinguishable from an ok<n cell (parsefail 
       "parsefail" in report and "(parsed 1/3)" in report, report)
 check("boundary case renders its spread dict, not a pass fraction",
       "spread" in report and "Hot=3" in report, report)
+check("boundary case with parsed<n also surfaces the parsefail marker (not just structured cells)",
+      "parsefail" in report and "(parsed 2/3)" in report, report)
 check("HARD tag is rendered for the hard case", "HARD" in report, report)
 check("Recommendation/Deployment sections stay visibly unfilled (FILL IN present, wrapped in <mark>)",
       report.count("<mark>") >= 6 and "FILL IN" in report, report)

@@ -167,7 +167,11 @@ if GRADE and GRADE.get("cases"):
                 for field, counts in r["boundary_spread"].items():
                     counts_txt = ", ".join(f"{esc(val)}={cnt}" for val, cnt in counts.items())
                     parts.append(f"{esc(field)}: {counts_txt}")
-                emit(f"<td class='boundary'>spread &mdash; {'; '.join(parts)}</td>")
+                parsed, n = r.get("parsed"), r.get("n")
+                cls = "boundary parsefail" if parsed is not None and n is not None and parsed < n else "boundary"
+                extra = (f" <span class='parsefail'>(parsed {parsed}/{n})</span>"
+                         if parsed is not None and n is not None and parsed < n else "")
+                emit(f"<td class='{cls}'>spread &mdash; {'; '.join(parts)}{extra}</td>")
             elif r.get("mae") is not None:
                 emit(f"<td>MAE={r['mae']:.2f} ok {r['ok']}/{r['n']}</td>")
             elif r.get("fabricated") is not None:
